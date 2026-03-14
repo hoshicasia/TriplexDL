@@ -1,0 +1,13 @@
+defaults:
+  - grummit_triplexnet
+  - _self_
+
+loss_function:
+  _target_: src.loss.TriplexMILLoss
+  aggregation_mode: "attention_noisy_or"
+  attention_temperature: 0.7
+  attention_mix_alpha: 0.6
+  attention_entropy_weight: 0.01
+
+writer:
+  run_name: "grummit_triplexnet_sparsemil"
