@@ -46,7 +46,7 @@ loss_function:
   smoothness_positive_only: true
 
 trainer:
-  threshold_tuning_during_training: true
+  threshold_tuning_during_training: false
   n_epochs: 200
   early_stop: 25
 

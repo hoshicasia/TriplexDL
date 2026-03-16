@@ -60,7 +60,7 @@ datasets:
     pos_fasta_path: "grummit/triplexDNA_pos.fa"
     neg_fasta_path: "grummit/triplexDNA_neg.fa"
     bed_dir: "Neural"
-    max_seq_len: 1000
+    max_seq_len: 1500
     limit: null
     name: "train"
     positional_omics: false

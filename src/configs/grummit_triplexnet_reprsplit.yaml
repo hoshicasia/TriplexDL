@@ -10,7 +10,7 @@ rep_split_n_quantiles: 4
 rep_split_min_stratum_count: 3
 
 trainer:
-  threshold_tuning_during_training: true
+  threshold_tuning_during_training: false
 
 writer:
   run_name: "grummit_triplexnet_reprsplit"

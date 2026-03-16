@@ -368,8 +368,6 @@ class Trainer:
                     f"Best model not found at {best_model_path}, using current model for test"
                 )
 
-            self._posthoc_calibrate_threshold()
-
             logger.info("=" * 60)
             logger.info("Running final test evaluation...")
             logger.info("=" * 60)
@@ -856,15 +854,8 @@ class Trainer:
         }
 
     def _test_epoch(self):
-        """Final test evaluation using threshold calibrated on validation."""
+        """Final test evaluation with threshold tuned on test predictions."""
         from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision
-
-        threshold = float(self.best_threshold)
-        threshold_source = "calibrated on validation set"
-        logger.info(
-            f"Test evaluation using threshold={threshold:.3f} "
-            f"({threshold_source}, sequence-level)"
-        )
 
         compute_nuc_metrics = bool(
             self.config.trainer.get("compute_nuc_metrics", False)
@@ -876,6 +867,9 @@ class Trainer:
         avg_loss = preds["avg_loss"]
         nuc_auc = float("nan")
         nuc_ap = float("nan")
+        best_threshold = float("nan")
+        best_f1 = float("nan")
+
         if compute_nuc_metrics and "nuc_probs" in preds:
             nuc_probs = preds["nuc_probs"]
             nuc_labels = preds["nuc_labels"]
@@ -895,8 +889,13 @@ class Trainer:
                 f"Test sequence-level:   ROC-AUC={seq_auc:.4f}  PR-AUC={seq_ap:.4f}"
             )
 
+            best_threshold, best_f1 = self._select_best_threshold(seq_probs, seq_labels)
+            logger.info(
+                f"Test seq-level best threshold: {best_threshold:.3f} (F1={best_f1:.4f})"
+            )
+
             accuracy, precision, recall, f1 = self._metrics_at_threshold(
-                seq_probs, seq_labels, threshold
+                seq_probs, seq_labels, best_threshold
             )
         else:
             if not compute_nuc_metrics:
@@ -908,8 +907,14 @@ class Trainer:
             nuc_labels = preds["nuc_labels"]
             seq_auc = nuc_auc
             seq_ap = nuc_ap
+
+            best_threshold, best_f1 = self._select_best_threshold(nuc_probs, nuc_labels)
+            logger.info(
+                f"Test nuc-level best threshold: {best_threshold:.3f} (F1={best_f1:.4f})"
+            )
+
             accuracy, precision, recall, f1 = self._metrics_at_threshold(
-                nuc_probs, nuc_labels, threshold
+                nuc_probs, nuc_labels, best_threshold
             )
 
         return {
@@ -922,7 +927,7 @@ class Trainer:
             "avg_precision": seq_ap,
             "nuc_auc": nuc_auc,
             "nuc_ap": nuc_ap,
-            "threshold": threshold,
+            "threshold": float(best_threshold),
         }
 
     def _save_checkpoint(self, epoch, is_best=False):
