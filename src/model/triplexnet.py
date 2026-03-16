@@ -255,7 +255,7 @@ class TriplexNet(nn.Module):
         attn_weights = torch.softmax(attn_logits, dim=1)  # [B, L]
         return (x * attn_weights.unsqueeze(1)).sum(dim=2)  # [B, C]
 
-    def forward(self, sequence, omics_features, label=None, tissue_ids=None, mask=None):
+    def forward(self, sequence, omics_features, label=None, tissue_ids=None, mask=None, **kwargs):
         x = sequence.transpose(1, 2)
 
         x = torch.cat(

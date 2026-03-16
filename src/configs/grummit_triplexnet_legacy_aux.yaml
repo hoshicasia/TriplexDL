@@ -1,9 +1,0 @@
-defaults:
-  - grummit_triplexnet
-  - _self_
-
-model:
-  aux_head_hidden_dim: 64
-  aux_head_use_layernorm: false
-  aux_head_use_omics: false
-  aux_head_use_kmers: false

@@ -112,6 +112,12 @@ class TriplexDataset(Dataset):
         if limit is not None:
             self.data = self.data[:limit]
 
+        all_chroms = sorted({item[0] for item in self.data})
+        self.chrom_to_id = {c: i for i, c in enumerate(all_chroms)}
+        self.id_to_chrom = {i: c for c, i in self.chrom_to_id.items()}
+
+        self.sample_weights = {}
+
         self._verify_omics_overlap()
 
         logger.info(f"Total {name} samples: {len(self.data)}")
@@ -170,10 +176,16 @@ class TriplexDataset(Dataset):
             "omics_features": torch.FloatTensor(omics_features),
             "label": labels,
             "chrom": chrom,
+            "chrom_id": torch.tensor(self.chrom_to_id[chrom], dtype=torch.long),
         }
 
         if mask is not None:
             result["mask"] = mask
+
+        if idx in self.sample_weights:
+            result["sample_weight"] = torch.tensor(
+                self.sample_weights[idx], dtype=torch.float32
+            )
 
         return result
 

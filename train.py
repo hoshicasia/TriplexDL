@@ -71,9 +71,11 @@ def _resolve_dataset_paths(dataset_cfg):
     return dataset_cfg
 
 
-def _balance_split(indices, all_labels, target_ratio, split_name, seed):
+def _balance_split(indices, all_labels, target_ratio, split_name, seed, all_chromosomes=None):
     """
     Balance a split to achieve target neg:pos ratio using undersampling.
+    When all_chromosomes is provided, negatives are downsampled proportionally
+    per chromosome so every chromosome retains its relative representation.
 
     Args:
         indices: Indices for this split
@@ -81,6 +83,7 @@ def _balance_split(indices, all_labels, target_ratio, split_name, seed):
         target_ratio: Desired neg:pos ratio (e.g., 5.0 for 5:1)
         split_name: Name for logging
         seed: Random seed
+        all_chromosomes: Optional list of chromosome names (same length as all_labels)
 
     Returns:
         Balanced indices
@@ -107,10 +110,24 @@ def _balance_split(indices, all_labels, target_ratio, split_name, seed):
 
     if current_ratio > target_ratio:
         target_neg = int(n_pos * target_ratio)
-        target_neg = min(target_neg, n_neg)  # Can't sample more than available
-        neg_indices_sampled = np.random.choice(
-            neg_indices, size=target_neg, replace=False
-        ).tolist()
+        target_neg = min(target_neg, n_neg)
+
+        if all_chromosomes is not None:
+            neg_by_chrom = defaultdict(list)
+            for idx in neg_indices:
+                neg_by_chrom[all_chromosomes[idx]].append(idx)
+
+            neg_indices_sampled = []
+            for chrom, chrom_negs in neg_by_chrom.items():
+                chrom_quota = max(1, round(target_neg * len(chrom_negs) / n_neg))
+                chrom_quota = min(chrom_quota, len(chrom_negs))
+                sampled = np.random.choice(chrom_negs, size=chrom_quota, replace=False)
+                neg_indices_sampled.extend(sampled.tolist())
+        else:
+            neg_indices_sampled = np.random.choice(
+                neg_indices, size=target_neg, replace=False
+            ).tolist()
+
         balanced_indices = pos_indices + neg_indices_sampled
     else:
         logger.info(
@@ -224,9 +241,10 @@ def _genomic_bin_representative_split(full_dataset, labels, config, use_validati
     len_q = _quantile_bin(bin_mean_len, n_quantiles=n_quantiles)
     gc_q = _quantile_bin(bin_mean_gc, n_quantiles=n_quantiles)
 
+    bin_chroms = [b.rsplit("_", 1)[0] for b in unique_bins]
     strata = [
-        f"c{int(c)}_p{int(p)}_l{int(length_bin)}_g{int(g)}"
-        for c, p, length_bin, g in zip(bin_labels, pos_q, len_q, gc_q)
+        f"{chrom}_c{int(c)}_p{int(p)}_l{int(length_bin)}_g{int(g)}"
+        for chrom, c, p, length_bin, g in zip(bin_chroms, bin_labels, pos_q, len_q, gc_q)
     ]
     safe_strata = _build_safe_strata(strata, bin_labels, min_count=min_stratum_count)
 
@@ -624,7 +642,8 @@ def _build_fold(
             "seed": config.seed,
         }
         train_indices = _balance_split(
-            train_indices, labels, 1.0, f"{fold_name} Train (initial)", config.seed
+            train_indices, labels, 1.0, f"{fold_name} Train (initial)", config.seed,
+            all_chromosomes=chromosomes,
         )
     elif balance_method == "oversample":
         logger.info(
@@ -632,17 +651,35 @@ def _build_fold(
         )
     else:
         train_indices = _balance_split(
-            train_indices, labels, train_ratio, f"{fold_name} Train", config.seed
+            train_indices, labels, train_ratio, f"{fold_name} Train", config.seed,
+            all_chromosomes=chromosomes,
         )
 
     if eval_ratio is not None and use_validation and len(val_indices) > 0:
         val_indices = _balance_split(
-            val_indices, labels, eval_ratio, f"{fold_name} Val", config.seed + 1
+            val_indices, labels, eval_ratio, f"{fold_name} Val", config.seed + 1,
+            all_chromosomes=chromosomes,
         )
     if eval_ratio is not None:
         test_indices = _balance_split(
-            test_indices, labels, eval_ratio, f"{fold_name} Test", config.seed + 2
+            test_indices, labels, eval_ratio, f"{fold_name} Test", config.seed + 2,
+            all_chromosomes=chromosomes,
         )
+
+    chrom_class_counts = Counter(
+        (chromosomes[i], labels[i]) for i in train_indices
+    )
+    n_groups = len(chrom_class_counts)
+    n_train = len(train_indices)
+    full_dataset.sample_weights = {}
+    for i in train_indices:
+        key = (chromosomes[i], labels[i])
+        full_dataset.sample_weights[int(i)] = n_train / (n_groups * chrom_class_counts[key])
+    logger.info(
+        f"{fold_name} Inverse-frequency weights: {n_groups} (chrom, class) groups, "
+        f"weight range [{min(full_dataset.sample_weights.values()):.3f}, "
+        f"{max(full_dataset.sample_weights.values()):.3f}]"
+    )
 
     logger.info(f"\n{fold_name} Chromosome distribution by split:")
     for split_name, split_idx in [
@@ -787,6 +824,7 @@ def _build_fold(
         resample_info=resample_info,
         hard_neg_info=hard_neg_info,
     )
+    trainer.id_to_chrom = getattr(full_dataset, "id_to_chrom", {})
     trainer.train()
 
     result = {
