@@ -11,7 +11,7 @@ import hydra
 import numpy as np
 import torch
 from hydra.utils import instantiate, to_absolute_path
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 
 from src.datasets.collate import collate_fn
@@ -569,7 +569,6 @@ def _build_fold(
     full_dataset,
     chromosomes,
     labels,
-    chrom_counts,
     train_indices,
     val_indices,
     test_indices,
@@ -861,7 +860,18 @@ def main(config):
                 f"Adjusting model n_omics_features from {model_feature_dim} to {dataset_feature_dim} "
                 f"based on instantiated dataset"
             )
-            config.model.n_omics_features = int(dataset_feature_dim)
+            with open_dict(config.model):
+                config.model.n_omics_features = int(dataset_feature_dim)
+
+    dataset_kmer_feature_dim = getattr(full_dataset, "kmer_feature_dim", 0)
+    model_kmer_feature_dim = config.model.get("n_kmer_features", 0)
+    if model_kmer_feature_dim != dataset_kmer_feature_dim:
+        logger.info(
+            f"Adjusting model n_kmer_features from {model_kmer_feature_dim} to {dataset_kmer_feature_dim} "
+            f"based on instantiated dataset"
+        )
+        with open_dict(config.model):
+            config.model.n_kmer_features = int(dataset_kmer_feature_dim)
 
     chromosomes = []
     labels = []
@@ -994,7 +1004,6 @@ def main(config):
                 full_dataset,
                 chromosomes,
                 labels,
-                chrom_counts,
                 train_idx,
                 val_idx,
                 test_idx,
@@ -1037,7 +1046,7 @@ def main(config):
             )
         if valid_test:
             logger.info(
-                f"  Mean test F1 (seq): {np.mean(valid_test):.4f} ± {np.std(valid_test):.4f}  ← primary (paper-aligned)"
+                f"  Mean test F1 (seq): {np.mean(valid_test):.4f} ± {np.std(valid_test):.4f}"
             )
         if valid_auc:
             logger.info(
@@ -1157,7 +1166,6 @@ def main(config):
                 full_dataset,
                 chromosomes,
                 labels,
-                chrom_counts,
                 np.array(train_indices_final),
                 val_indices_final,
                 np.array(test_indices_final),
@@ -1278,7 +1286,6 @@ def main(config):
 
             train_set = set(train_bins)
             val_set = set(val_bins)
-            set(test_bins)
 
             train_indices, val_indices, test_indices = [], [], []
             for bi, bname in enumerate(unique_bins):
@@ -1348,6 +1355,8 @@ def main(config):
             logger.warning(
                 "Using random stratified split - this may cause data leakage between train/val/test!"
             )
+            test_frac = config.get("test_frac", 0.15)
+            val_frac = config.get("val_frac", 0.15)
             indices = np.arange(len(full_dataset))
             if use_validation and val_frac > 0:
                 train_indices, temp_indices = train_test_split(
@@ -1377,7 +1386,6 @@ def main(config):
         full_dataset,
         chromosomes,
         labels,
-        chrom_counts,
         np.array(train_indices)
         if not isinstance(train_indices, np.ndarray)
         else train_indices,

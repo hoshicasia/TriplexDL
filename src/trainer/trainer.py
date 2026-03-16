@@ -146,12 +146,7 @@ class Trainer:
         return topk_probs.mean(dim=1)
 
     def _select_best_threshold(self, probs: torch.Tensor, labels: torch.Tensor):
-        """Select threshold maximizing F1; fallback to PR-intersection if needed.
-
-        NOTE:
-        Pure PR-intersection can pick degenerate thresholds where precision=recall=0
-        (no predicted positives), which yields F1=0 while AUC is high.
-        """
+        """Select threshold maximizing F1"""
         thresholds = torch.linspace(0.01, 0.99, 199)
         best_threshold = 0.5
         best_f1 = -1.0
@@ -183,10 +178,7 @@ class Trainer:
         return best_threshold, best_f1
 
     def _posthoc_calibrate_threshold(self):
-        """Recalibrate threshold once after training on validation predictions.
-
-        This mirrors paper-like post-training threshold calibration.
-        """
+        """Recalibrate threshold once after training using validation predictions."""
         if self.val_dataloader is None:
             logger.info(
                 "Post-hoc threshold calibration skipped: no validation dataloader"
@@ -207,7 +199,7 @@ class Trainer:
         new_threshold, new_f1 = self._select_best_threshold(probs, labels)
         self.best_threshold = float(new_threshold)
         logger.info(
-            f"Post-hoc threshold calibration ({level}-level, objective=pr_intersection): "
+            f"Post-hoc threshold calibration ({level}-level, objective=max_f1): "
             f"{old_threshold:.3f} -> {self.best_threshold:.3f} (val F1={new_f1:.4f})"
         )
 
@@ -215,7 +207,7 @@ class Trainer:
         """Main training loop"""
         for epoch in range(self.start_epoch, self.epochs + 1):
             if self.warmup_enabled and epoch <= self.warmup_epochs:
-                progress = epoch / self.warmup_epochs  # 0 → 1
+                progress = epoch / self.warmup_epochs
                 warmup_lr = self.base_lr * (
                     self.warmup_start_factor
                     + (1.0 - self.warmup_start_factor) * progress
@@ -266,8 +258,13 @@ class Trainer:
                             f"val/{metric_name}", metric_value, step=epoch
                         )
 
-                if val_metrics.get("f1", 0) > self.best_val_metric:
-                    self.best_val_metric = val_metrics["f1"]
+                if (
+                    val_metrics.get("f1", val_metrics.get("seq_f1", 0))
+                    > self.best_val_metric
+                ):
+                    self.best_val_metric = val_metrics.get(
+                        "f1", val_metrics.get("seq_f1", 0)
+                    )
                     self.best_threshold = val_metrics[
                         "threshold"
                     ]  # lock in threshold for this best F1
@@ -295,7 +292,9 @@ class Trainer:
                         )
                     else:
                         if self.lr_scheduler.mode == "max":
-                            scheduler_metric = val_metrics.get("f1", 0)
+                            scheduler_metric = val_metrics.get(
+                                "f1", val_metrics.get("seq_f1", 0)
+                            )
                             logger.info(
                                 f"ReduceLROnPlateau (mode=max): monitoring val_f1={scheduler_metric:.4f}"
                             )
@@ -432,7 +431,7 @@ class Trainer:
         """Re-select training negatives using hard-negative mining.
 
         Every ``hard_neg_mining_freq`` epochs:
-          1. Run inference on *all* negatives in the pool with the current model.
+                    1. Run a scoring pass on *all* negatives in the pool with the current model.
           2. Rank by top-k-mean probability (same scoring as seq-level eval).
           3. Take the top ``hard_neg_ratio`` fraction as **hard** negatives.
           4. Fill the remaining quota with *random* negatives (diversity floor).
@@ -567,6 +566,8 @@ class Trainer:
 
             logits_detached = outputs["logits"].detach()
             batch["logits"] = logits_detached
+            if "seq_logit" in outputs:
+                batch["seq_logit"] = outputs["seq_logit"].detach()
 
             losses = self.criterion(
                 logits=outputs["logits"],
@@ -606,7 +607,10 @@ class Trainer:
         avg_loss = total_loss / len(self.train_dataloader)
         metrics_result = {"loss": avg_loss}
         for m in self.metrics["train"]:
-            metrics_result[m.name] = m.compute().item()
+            result = m.compute()
+            metrics_result[m.name] = (
+                result.item() if hasattr(result, "item") else result
+            )
 
         return metrics_result
 
@@ -615,7 +619,7 @@ class Trainer:
         self.model.eval()
         total_loss = 0
 
-        for m in self.metrics["inference"]:
+        for m in self.metrics["eval"]:
             m.reset()
 
         with torch.no_grad():
@@ -628,12 +632,14 @@ class Trainer:
 
                 outputs = self.model(**batch)
                 batch["logits"] = outputs["logits"]
+                if "seq_logit" in outputs:
+                    batch["seq_logit"] = outputs["seq_logit"]
 
                 losses = self.criterion(**batch)
                 total_loss += losses["loss"].item()
 
                 metric_values = {}
-                for m in self.metrics["inference"]:
+                for m in self.metrics["eval"]:
                     metric_val = m(**batch)
                     metric_values[m.name] = (
                         metric_val.item() if torch.is_tensor(metric_val) else metric_val
@@ -645,8 +651,11 @@ class Trainer:
 
         avg_loss = total_loss / len(dataloader)
         metrics_result = {"loss": avg_loss}
-        for m in self.metrics["inference"]:
-            metrics_result[m.name] = m.compute().item()
+        for m in self.metrics["eval"]:
+            result = m.compute()
+            metrics_result[m.name] = (
+                result.item() if hasattr(result, "item") else result
+            )
 
         return metrics_result
 
@@ -659,7 +668,14 @@ class Trainer:
         metrics["threshold"] = float(self.best_threshold)
         return metrics
 
-    def _collect_predictions(self, dataloader, desc, epoch):
+    @staticmethod
+    def _reverse_complement_batch(sequence):
+        """Reverse complement a batch of one-hot sequences [B, L, 4] (A,C,G,T)."""
+        rc = sequence.flip(dims=[1])
+        rc = rc[:, :, [3, 2, 1, 0]]
+        return rc
+
+    def _collect_predictions(self, dataloader, desc, epoch, tta=True):
         """
         Collect predictions from a dataloader.
 
@@ -688,6 +704,8 @@ class Trainer:
                     for k, v in batch.items()
                 }
 
+                # Forward pass
+                input_keys = set(batch.keys())
                 outputs = self.model(**batch)
                 batch.update(outputs)
 
@@ -707,8 +725,21 @@ class Trainer:
                     all_nuc_probs.append(nuc_probs.view(-1).cpu())
                     all_nuc_labels.append(labels.view(-1).cpu())
 
+                # Sequence-level: with optional TTA
                 if "seq_logit" in batch:
-                    seq_prob = torch.sigmoid(batch["seq_logit"]).view(-1)
+                    seq_prob_fwd = torch.sigmoid(batch["seq_logit"]).view(-1)
+
+                    if tta:
+                        # Reverse complement pass
+                        rc_seq = self._reverse_complement_batch(batch["sequence"])
+                        rc_batch = {k: batch[k] for k in input_keys}
+                        rc_batch["sequence"] = rc_seq
+                        rc_outputs = self.model(**rc_batch)
+                        seq_prob_rc = torch.sigmoid(rc_outputs["seq_logit"]).view(-1)
+                        seq_prob = 0.5 * (seq_prob_fwd + seq_prob_rc)
+                    else:
+                        seq_prob = seq_prob_fwd
+
                     all_seq_probs.append(seq_prob.cpu())
                     if labels.dim() > 1:
                         seq_lab = (labels.sum(dim=1) > 0).float()

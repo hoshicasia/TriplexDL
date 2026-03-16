@@ -95,6 +95,7 @@ class TriplexNet(nn.Module):
     def __init__(
         self,
         n_omics_features: int = 221,
+        n_kmer_features: int = 0,
         dropout: float = 0.2,
         n_channels: int = 128,
         n_dilated_blocks: int = 7,  # 7 blocks → RF ≈ 270bp
@@ -103,10 +104,13 @@ class TriplexNet(nn.Module):
         drop_path_rate: float = 0.15,  # stochastic depth (linearly increases)
         aux_loss_weight: float = 0.15,  # weight for auxiliary sequence-level loss
         nucleotide_level: bool = True,
+        kmer_proj_dim: int = 64,
     ):
         super().__init__()
         self.nucleotide_level = nucleotide_level
         self.aux_loss_weight = aux_loss_weight
+        self.n_kmer_features = int(n_kmer_features)
+        self.kmer_proj_dim = int(kmer_proj_dim) if self.n_kmer_features > 0 else 0
 
         n_groups = min(8, n_channels)
         stem_ch = n_channels // 3
@@ -180,6 +184,18 @@ class TriplexNet(nn.Module):
 
         self.attn_pool_layer = nn.Conv1d(n_channels, 1, kernel_size=1)
 
+        if self.n_kmer_features > 0:
+            self.kmer_proj = nn.Sequential(
+                nn.Linear(self.n_kmer_features, self.kmer_proj_dim),
+                nn.LayerNorm(self.kmer_proj_dim),
+                nn.GELU(),
+                nn.Dropout(dropout * 0.5),
+            )
+        else:
+            self.kmer_proj = None
+
+        global_feature_dim = n_channels + n_omics_features + self.kmer_proj_dim
+
         if nucleotide_level:
             self.head = nn.Sequential(
                 nn.Conv1d(n_channels * 2, n_channels, kernel_size=1),
@@ -188,15 +204,17 @@ class TriplexNet(nn.Module):
                 nn.Dropout(dropout),
                 nn.Conv1d(n_channels, 1, kernel_size=1),
             )
+
             self.aux_head = nn.Sequential(
-                nn.Linear(n_channels, 64),
+                nn.Linear(global_feature_dim, 128),
+                nn.LayerNorm(128),
                 nn.GELU(),
                 nn.Dropout(dropout),
-                nn.Linear(64, 1),
+                nn.Linear(128, 1),
             )
         else:
             self.head = nn.Sequential(
-                nn.Linear(n_channels + n_omics_features, 128),
+                nn.Linear(global_feature_dim, 128),
                 nn.LayerNorm(128),
                 nn.GELU(),
                 nn.Dropout(dropout),
@@ -216,20 +234,6 @@ class TriplexNet(nn.Module):
             nn.init.ones_(m.weight)
             nn.init.zeros_(m.bias)
 
-    def _masked_mean_pool(self, x, mask):
-        """Average-pool only over real (non-padding) positions.
-
-        Args:
-            x:    [B, C, L]
-            mask: [B, L] with 1=real, 0=padding, or None
-        Returns:
-            [B, C]
-        """
-        if mask is None:
-            return x.mean(dim=2)
-        m = mask.unsqueeze(1)  # [B, 1, L]
-        return (x * m).sum(dim=2) / (m.sum(dim=2) + 1e-8)  # [B, C]
-
     def _attn_pool(self, x, mask):
         """Attention-weighted pooling: learns which positions matter most
         for the global sequence representation.
@@ -246,7 +250,15 @@ class TriplexNet(nn.Module):
         attn_weights = torch.softmax(attn_logits, dim=1)  # [B, L]
         return (x * attn_weights.unsqueeze(1)).sum(dim=2)  # [B, C]
 
-    def forward(self, sequence, omics_features, label=None, tissue_ids=None, mask=None):
+    def forward(
+        self,
+        sequence,
+        omics_features,
+        kmer_features=None,
+        label=None,
+        tissue_ids=None,
+        mask=None,
+    ):
         x = sequence.transpose(1, 2)
 
         x = torch.cat(
@@ -270,6 +282,14 @@ class TriplexNet(nn.Module):
         beta = self.film_beta(omics_features).unsqueeze(-1)
         x = gamma * x + beta
 
+        global_features = [omics_features]
+        if self.kmer_proj is not None:
+            if kmer_features is None:
+                kmer_features = omics_features.new_zeros(
+                    omics_features.size(0), self.n_kmer_features
+                )
+            global_features.append(self.kmer_proj(kmer_features))
+
         result = {}
         if self.nucleotide_level:
             x_global = self._attn_pool(x, mask)
@@ -277,7 +297,8 @@ class TriplexNet(nn.Module):
             x_combined = torch.cat([x, x_global_bc], dim=1)
             logits_pos = self.head(x_combined).squeeze(1)
 
-            seq_logit = self.aux_head(x_global).squeeze(-1)
+            aux_input = torch.cat([x_global] + global_features, dim=1)
+            seq_logit = self.aux_head(aux_input).squeeze(-1)
             result["logits"] = logits_pos
             result["seq_logit"] = seq_logit
 
@@ -290,7 +311,7 @@ class TriplexNet(nn.Module):
                 result["aux_loss"] = aux_loss * self.aux_loss_weight
         else:
             pooled = self._attn_pool(x, mask)
-            combined = torch.cat([pooled, omics_features], dim=1)
+            combined = torch.cat([pooled] + global_features, dim=1)
             logits = self.head(combined).squeeze(-1)
             result["logits"] = logits
 

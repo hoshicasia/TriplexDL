@@ -27,6 +27,9 @@ class TriplexDataset(Dataset):
         selected_bed_features: List[str] = None,
         omics_feature_mode: str = "coverage",
         score_transform: str = "log1p",
+        nuc_mask_prob: float = 0.0,
+        coord_shift_max: int = 0,
+        kmer_max_k: int = 0,
     ):
         """
         Args:
@@ -46,12 +49,27 @@ class TriplexDataset(Dataset):
                 - score_mean: overlap-weighted normalized BED score per track
                 - coverage_score: concatenate coverage + score_mean per track
             score_transform (str): one of {"none", "log1p"} for BED score normalization.
+            nuc_mask_prob (float): probability of masking each nucleotide with N during
+                                   training. 0 = disabled.
+            coord_shift_max (int): max bp shift of coordinates for omics feature
+                                    extraction during training. 0 = disabled.
+            kmer_max_k (int): maximum k for k-mer frequency features. 0 = disabled.
+                Computes normalized frequency vectors for k=1..kmer_max_k and
+                returns them as a separate global feature vector.
         """
         self.name = name
         self.max_seq_len = max_seq_len
         self.positional_omics = positional_omics
         self.nucleotide_level = nucleotide_level
         self.rc_augment = rc_augment
+        self.nuc_mask_prob = nuc_mask_prob
+        self.coord_shift_max = coord_shift_max
+        self.kmer_max_k = kmer_max_k
+        if kmer_max_k > 0:
+            self._kmer_feature_dim = sum(4**k for k in range(1, kmer_max_k + 1))
+            self._nuc_to_idx = {"A": 0, "C": 1, "G": 2, "T": 3}
+        else:
+            self._kmer_feature_dim = 0
         self.selected_bed_features = (
             set(selected_bed_features) if selected_bed_features else None
         )
@@ -77,12 +95,18 @@ class TriplexDataset(Dataset):
             bed_dir
         )
         self.base_feature_dim = len(self.bed_names)
+        self.kmer_feature_dim = self._kmer_feature_dim
         self.feature_dim = self._infer_feature_dim()
         logger.info(f"  Loaded {len(self.bed_names)} omics features")
         logger.info(
             f"  Omics mode={self.omics_feature_mode}, score_transform={self.score_transform}, "
             f"feature_dim={self.feature_dim}"
         )
+        if self.kmer_feature_dim > 0:
+            logger.info(
+                f"  Enabled k-mer features: k=1..{self.kmer_max_k}, "
+                f"kmer_feature_dim={self.kmer_feature_dim}"
+            )
 
         self.data = []
         for chrom, start, end, strand, seq in pos_data:
@@ -93,10 +117,38 @@ class TriplexDataset(Dataset):
         if limit is not None:
             self.data = self.data[:limit]
 
+        self._verify_omics_overlap()
+
         logger.info(f"Total {name} samples: {len(self.data)}")
 
     def __len__(self):
         return len(self.data)
+
+    def _verify_omics_overlap(self):
+        """Check that at least some samples have non-zero omics features."""
+        n_check = min(100, len(self.data))
+        n_nonzero = 0
+        sample_chroms = set()
+        bed_chroms = set()
+        for i in range(n_check):
+            chrom, start, end, strand, seq, label = self.data[i]
+            sample_chroms.add(chrom)
+            feats = self._extract_omics_features(chrom, start, end)
+            if feats.any():
+                n_nonzero += 1
+        for bed_name in self.bed_names[:1]:
+            bed_chroms.update(self.bed_data[bed_name].keys())
+        if n_nonzero == 0:
+            logger.error(
+                f"ALL omics features are zero for the first {n_check} samples! "
+                f"Sample chroms: {sorted(sample_chroms)[:5]}, "
+                f"BED chroms: {sorted(bed_chroms)[:5]}. "
+                "Check chromosome naming convention (e.g. 'chr1' vs '1')."
+            )
+        else:
+            logger.info(
+                f"  Omics sanity check: {n_nonzero}/{n_check} samples have non-zero features"
+            )
 
     def __getitem__(self, idx):
         chrom, start, end, strand, seq, label = self.data[idx]
@@ -104,8 +156,32 @@ class TriplexDataset(Dataset):
         if self.rc_augment and torch.rand(1).item() < 0.5:
             seq = seq.translate(self._COMPLEMENT)[::-1]
 
+        # Random coordinate shift: offsets start/end for omics feature extraction
+        aug_start, aug_end = start, end
+        if self.coord_shift_max > 0 and self.rc_augment:  # only shift during training
+            shift = int(
+                torch.randint(
+                    -self.coord_shift_max, self.coord_shift_max + 1, (1,)
+                ).item()
+            )
+            aug_start = max(0, start + shift)
+            aug_end = max(aug_start + 1, end + shift)
+
         sequence = self._one_hot_encode(seq)
-        omics_features = self._extract_omics_features(chrom, start, end)
+        omics_features = self._extract_omics_features(chrom, aug_start, aug_end)
+
+        # K-mer frequency features (computed from raw seq BEFORE masking)
+        kmer_features = None
+        if self.kmer_max_k > 0:
+            kmer_features = self._compute_kmer_features(seq)
+
+        # Random nucleotide masking: replace random positions with N ([0.25,0.25,0.25,0.25])
+        if self.nuc_mask_prob > 0 and self.rc_augment:  # only mask during training
+            seq_len = min(len(seq), self.max_seq_len)
+            mask_rand = torch.rand(seq_len)
+            mask_positions = (mask_rand < self.nuc_mask_prob).numpy()
+            if mask_positions.any():
+                sequence[:seq_len][mask_positions] = 0.25
 
         actual_seq_len = min(len(seq), self.max_seq_len)
 
@@ -126,6 +202,9 @@ class TriplexDataset(Dataset):
             "label": labels,
             "chrom": chrom,
         }
+
+        if kmer_features is not None:
+            result["kmer_features"] = torch.FloatTensor(kmer_features)
 
         if mask is not None:
             result["mask"] = mask
@@ -158,6 +237,9 @@ class TriplexDataset(Dataset):
             parts = header.split(":")
             if len(parts) >= 5:
                 chrom = parts[2]
+                # Normalize chromosome name: ensure "chr" prefix for BED compatibility
+                if not chrom.startswith("chr"):
+                    chrom = f"chr{chrom}"
                 start = int(parts[3])
                 end = int(parts[4])
                 strand = parts[5] if len(parts) > 5 else "+"
@@ -206,6 +288,9 @@ class TriplexDataset(Dataset):
                     if len(parts) < 3:
                         continue
                     chrom = parts[0]
+                    # Normalize chromosome name: ensure "chr" prefix
+                    if not chrom.startswith("chr"):
+                        chrom = f"chr{chrom}"
                     start = int(parts[1])
                     end = int(parts[2])
                     score = 1.0
@@ -232,6 +317,49 @@ class TriplexDataset(Dataset):
                 bed_score_scales[bed_file.stem] = 1.0
 
         return bed_data, [bf.stem for bf in bed_files], bed_score_scales
+
+    def _compute_kmer_features(self, seq: str) -> np.ndarray:
+        """Compute normalized k-mer frequency vectors for k=1..kmer_max_k.
+
+        For each k, counts all valid k-mers (skipping those containing N),
+        normalises by the number of valid k-mers, and stores as a length-4^k
+        vector in ACGT alphabetical order.  All k vectors are concatenated.
+
+        Returns:
+            np.ndarray of shape [sum(4^k for k in 1..kmer_max_k)], float32.
+        """
+        seq = seq[: self.max_seq_len]
+        features = np.zeros(self._kmer_feature_dim, dtype=np.float32)
+
+        # Numeric encoding: A=0, C=1, G=2, T=3, other=-1
+        nuc_idx = np.array([self._nuc_to_idx.get(c, -1) for c in seq], dtype=np.int8)
+
+        offset = 0
+        for k in range(1, self.kmer_max_k + 1):
+            n_possible = 4**k
+            n_kmers = len(seq) - k + 1
+            if n_kmers <= 0:
+                offset += n_possible
+                continue
+
+            # Build base-4 k-mer index for every position (vectorised)
+            kmer_indices = np.zeros(n_kmers, dtype=np.int32)
+            valid = np.ones(n_kmers, dtype=bool)
+            for j in range(k):
+                col = nuc_idx[j : j + n_kmers]
+                valid &= col >= 0
+                kmer_indices += col.astype(np.int32) * (4 ** (k - 1 - j))
+
+            valid_indices = kmer_indices[valid]
+            if len(valid_indices) > 0:
+                counts = np.bincount(valid_indices, minlength=n_possible).astype(
+                    np.float32
+                )
+                features[offset : offset + n_possible] = counts / len(valid_indices)
+
+            offset += n_possible
+
+        return features
 
     def _infer_feature_dim(self) -> int:
         if self.positional_omics:

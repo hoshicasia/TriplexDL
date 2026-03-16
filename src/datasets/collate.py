@@ -20,6 +20,11 @@ def collate_fn(dataset_items: list[dict]):
         [item["omics_features"] for item in dataset_items]
     )
 
+    if "kmer_features" in dataset_items[0]:
+        result_batch["kmer_features"] = torch.stack(
+            [item["kmer_features"] for item in dataset_items]
+        )
+
     labels = [item["label"] for item in dataset_items]
     if isinstance(labels[0], torch.Tensor) and labels[0].dim() > 0:
         result_batch["label"] = torch.stack(labels)

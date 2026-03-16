@@ -37,8 +37,8 @@ model:
 loss_function:
   _target_: src.loss.TriplexMILLoss
   top_k_ratio: 1.0
-  pos_weight: 2.0
-  nuc_loss_weight: 0.3
+  pos_weight: 1.0
+  nuc_loss_weight: 0.0
   label_smoothing: 0.05
 
 
@@ -64,7 +64,7 @@ datasets:
     pos_fasta_path: "grummit/triplexDNA_pos.fa"
     neg_fasta_path: "grummit/triplexDNA_neg.fa"
     bed_dir: "Neural"
-    max_seq_len: 1000
+    max_seq_len: 1500
     limit: null
     name: "train"
     positional_omics: false
@@ -80,24 +80,44 @@ dataloader:
 
 metrics:
   train:
-    - _target_: src.metrics.MCCMetric
-      nucleotide_level: true
+    # Nucleotide-level
     - _target_: src.metrics.F1Metric
       nucleotide_level: true
-
-  inference:
     - _target_: src.metrics.MCCMetric
+      nucleotide_level: true
+    # Sequence-level
+    - _target_: src.metrics.F1Metric
+      nucleotide_level: false
+    - _target_: src.metrics.MCCMetric
+      nucleotide_level: false
+
+  eval:
+    # Nucleotide-level
+    - _target_: src.metrics.F1Metric
       nucleotide_level: true
     - _target_: src.metrics.PrecisionMetric
       nucleotide_level: true
     - _target_: src.metrics.RecallMetric
       nucleotide_level: true
-    - _target_: src.metrics.F1Metric
+    - _target_: src.metrics.MCCMetric
       nucleotide_level: true
     - _target_: src.metrics.AUCMetric
       nucleotide_level: true
     - _target_: src.metrics.APMetric
       nucleotide_level: true
+    # Sequence-level
+    - _target_: src.metrics.F1Metric
+      nucleotide_level: false
+    - _target_: src.metrics.PrecisionMetric
+      nucleotide_level: false
+    - _target_: src.metrics.RecallMetric
+      nucleotide_level: false
+    - _target_: src.metrics.MCCMetric
+      nucleotide_level: false
+    - _target_: src.metrics.AUCMetric
+      nucleotide_level: false
+    - _target_: src.metrics.APMetric
+      nucleotide_level: false
 
 writer:
   _target_: src.logger.comet_writer.CometMLWriter
