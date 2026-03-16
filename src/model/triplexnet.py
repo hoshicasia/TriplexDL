@@ -135,7 +135,7 @@ class TriplexNet(nn.Module):
             nn.Dropout(dropout * 0.5),
         )
 
-        dilation_cycle = [1, 2, 4, 8, 16, 32, 64]
+        dilation_cycle = [1, 2, 4, 8, 16, 32, 64, 128]
         dp_rates = [
             drop_path_rate * i / max(n_dilated_blocks - 1, 1)
             for i in range(n_dilated_blocks)
@@ -158,9 +158,6 @@ class TriplexNet(nn.Module):
             )
 
         self.film_mid_idx = n_dilated_blocks // 2
-
-        self.film_norm_mid = nn.GroupNorm(n_groups, n_channels)
-        self.film_norm_final = nn.GroupNorm(n_groups, n_channels)
 
         self.film_gamma_mid = nn.Sequential(
             nn.Linear(n_omics_features, n_channels),
@@ -281,13 +278,13 @@ class TriplexNet(nn.Module):
             if i == self.film_mid_idx:
                 gm = self.film_gamma_mid(omics_features).unsqueeze(-1) * 2
                 bm = self.film_beta_mid(omics_features).unsqueeze(-1)
-                x = self.film_norm_mid(gm * x + bm)
+                x = gm * x + bm
                 if mask is not None:
                     x = x * mask.unsqueeze(1)
 
         gamma = self.film_gamma(omics_features).unsqueeze(-1) * 2
         beta = self.film_beta(omics_features).unsqueeze(-1)
-        x = self.film_norm_final(gamma * x + beta)
+        x = gamma * x + beta
         if mask is not None:
             x = x * mask.unsqueeze(1)
 
