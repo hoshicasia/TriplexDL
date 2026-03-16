@@ -3,19 +3,21 @@ defaults:
 
 seed: 42
 
-split_method: genomic_bin
+split_method: genomic_bin_representative
 bin_size: 2000000
 test_frac: 0.15
 val_frac: 0.15
 chromosome_split: false
 target_class_ratio: 5.0
+rep_split_n_quantiles: 4
+rep_split_min_stratum_count: 3
 
 trainer:
   n_epochs: 100
   save_dir: "saved"
   save_period: 5
   resume_from: null
-  threshold_tuning_during_training: false
+  threshold_tuning_during_training: true
   compute_nuc_metrics: false
   early_stop: 20
   device: "auto"
@@ -37,8 +39,6 @@ model:
 
 loss_function:
   _target_: src.loss.TriplexMILLoss
-  # Prefer top-k MIL pooling over noisy-or to reduce sequence-length bias.
-  # Interprets a positive region as "contains a small positive subregion".
   top_k_ratio: 0.05
   aggregation_mode: "topk"
   pos_weight: 2.0
@@ -53,12 +53,12 @@ loss_function:
 optimizer:
   _target_: torch.optim.AdamW
   lr: 2.0e-4
-  weight_decay: 5.0e-3
+  weight_decay: 1.0e-2
   betas: [0.9, 0.999]
 
 lr_scheduler:
   _target_: torch.optim.lr_scheduler.CosineAnnealingLR
-  T_max: 100
+  T_max: 50
   eta_min: 1.0e-6
 
 warmup:
@@ -78,6 +78,8 @@ datasets:
     positional_omics: false
     nucleotide_level: true
     rc_augment: true
+    nuc_mask_prob: 0.02
+    coord_shift_max: 30
     omics_feature_mode: "coverage_score"
 
 dataloader:

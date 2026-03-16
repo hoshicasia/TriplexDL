@@ -2,11 +2,7 @@ defaults:
   - grummit_triplexnet
   - _self_
 
-split_method: genomic_bin_representative
-bin_size: 3000000 #i do not recommend using less than 2mb because of the risk of data leakage
-target_class_ratio: 3.5
-rep_split_n_quantiles: 4
-rep_split_min_stratum_count: 3
+target_class_ratio: 5.0
 
 k_fold: 3
 
@@ -19,31 +15,14 @@ datasets:
   train:
     nuc_mask_prob: 0.03
     coord_shift_max: 50
-    # kmer_max_k: 4
-    # kmer_window_count: 8
 
 optimizer:
   lr: 1.2e-4
-  weight_decay: 1.0e-2
-
-lr_scheduler:
-  T_max: 100
-  eta_min: 1.0e-6
 
 warmup:
   enabled: true
   warmup_epochs: 4
   warmup_start_factor: 0.05
-
-loss_function:
-  aggregation_mode: "topk"
-  top_k_ratio: 0.05
-  label_smoothing: 0.05
-  nuc_loss_weight: 0.0
-  positive_sparsity_weight: 0.02
-  negative_sparsity_weight: 0.0
-  smoothness_weight: 0.01
-  smoothness_positive_only: true
 
 trainer:
   threshold_tuning_during_training: false
