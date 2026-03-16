@@ -3,7 +3,7 @@ defaults:
   - _self_
 
 split_method: genomic_bin_representative
-bin_size: 3000000
+bin_size: 3000000 #i do not recommend using less than 2mb because of the risk of data leakage
 target_class_ratio: 3.5
 rep_split_n_quantiles: 4
 rep_split_min_stratum_count: 3
