@@ -34,10 +34,7 @@ python train.py -cn=grummit_triplexnet_improved
 python train.py -cn=grummit_triplexnet_improved k_fold=3
 ```
 
-**Note**: в то время как кросс-валидация помогает получить менее смещенные метрики,
-количество данных для обучения уменьшается, что может приводить к худшем обучению
-
-### Как обучить на своих данных:
+### Запуск на своих данных
 
 ```bash
 python train.py -cn=grummit_triplexnet_improved \
@@ -70,25 +67,26 @@ python scripts/score_regions.py \
 
 ## Важные параметры
 
-### Разбиение и валидация
+### Разбиение
 
-- `split_method`:  `genomic_bin_representative`, `chromosome` (первый рекомендуемый)
+- `split_method`: `genomic_bin`, `genomic_bin_representative`, `chromosome`
+- `bin_size`: размер геномного бина
 - `k_fold`: число фолдов (`0` отключает CV)
-- `bin_size`: размер геномного бина для bin-based split
+- `target_class_ratio`: баланс neg:pos в train
 
-### Данные и аугментации
+### Датасет и аугментации
 
-- `datasets.train.max_seq_len`: ограничение длины последовательности
+- `datasets.train.max_seq_len`: максимальная длина последовательности
 - `datasets.train.rc_augment`: reverse-complement аугментация
-- `datasets.train.nuc_mask_prob`: вероятность маскирования нуклеотидов
-- `datasets.train.coord_shift_max`: случайный сдвиг координат
-- `datasets.train.kmer_max_k`: максимальная длина k-мера для локальных оконных признаков
-- `datasets.train.kmer_window_count`: число окон для локальных k-мерных признаков
+- `datasets.train.nuc_mask_prob`: вероятность маскирования one-hot позиций
+- `datasets.train.coord_shift_max`: случайный сдвиг координат для извлечения омиксов
+- `datasets.train.omics_feature_mode`: `coverage`, `score_mean`, `coverage_score`
+- `datasets.train.score_transform`: `none` или `log1p`
 
-### Модель, лосс и оптимизация
+### Модель и оптимизация
 
-- `model.n_channels`, `model.n_dilated_blocks`, `model.drop_path_rate`, `model.dropout`
-- `model.aux_loss_weight`: вес вспомогательного sequence-level лосса
+- `model.n_channels`, `model.n_dilated_blocks`, `model.kernel_size`
+- `model.drop_path_rate`, `model.dropout`, `model.aux_loss_weight`
 - `loss_function.nuc_loss_weight`, `loss_function.label_smoothing`, `loss_function.attention_entropy_weight`
 - `optimizer.lr`, `optimizer.weight_decay`
 - `lr_scheduler.T_max`, `lr_scheduler.eta_min`
@@ -115,7 +113,20 @@ export COMET_API_KEY=ВАШ_API
 - Лучший чекпоинт: `saved/<run_name>/model_best.pth`
 - Периодические чекпоинты: `saved/<run_name>/checkpoint-epochN.pth`
 
-## Примечания
+## Инференс регионов (тестовая версия)
 
-- Размеры признаков (`n_omics_features`, `n_kmer_features`) автоматически подстраиваются под созданный датасет.
-- Для более стабильной оценки лучше использовать `k_fold`, а не одиночный split.
+Скрипт: [scripts/score_regions.py](scripts/score_regions.py)
+
+Пример:
+
+```bash
+python scripts/score_regions.py \
+  --fasta /abs/path/candidates.fa \
+  --bed-dir /abs/path/bed_dir \
+  --checkpoint saved/<run>/model_best.pth \
+  --out saved/<run>/inference/preds.tsv \
+  --nuc-out saved/<run>/inference/preds.nuc.bedgraph \
+  --batch-size 8
+```
+
+По умолчанию берется `best_threshold` из чекпоинта, либо можно передать `--threshold`.

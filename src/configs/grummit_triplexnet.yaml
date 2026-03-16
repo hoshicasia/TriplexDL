@@ -13,7 +13,6 @@ target_class_ratio: 5.0
 model:
   _target_: src.model.TriplexNet
   n_omics_features: 442
-  n_kmer_features: 0
   dropout: 0.25
   n_channels: 192
   n_dilated_blocks: 9
@@ -45,8 +44,8 @@ warmup:
 loss_function:
   _target_: src.loss.TriplexMILLoss
   top_k_ratio: 1.0
-  pos_weight: 1.0
-  nuc_loss_weight: 0.0
+  pos_weight: 2.0
+  nuc_loss_weight: 0.3
   label_smoothing: 0.05
 
 datasets:
@@ -55,7 +54,7 @@ datasets:
     pos_fasta_path: "grummit/triplexDNA_pos.fa"
     neg_fasta_path: "grummit/triplexDNA_neg.fa"
     bed_dir: "Neural"
-    max_seq_len: 1500
+    max_seq_len: 1000
     limit: null
     name: "train"
     positional_omics: false
@@ -65,48 +64,24 @@ datasets:
 
 metrics:
   train:
-    # Nucleotide-level
-    - _target_: src.metrics.F1Metric
-      nucleotide_level: true
     - _target_: src.metrics.MCCMetric
       nucleotide_level: true
-    # Sequence-level
     - _target_: src.metrics.F1Metric
-      nucleotide_level: false
-    - _target_: src.metrics.MCCMetric
-      nucleotide_level: false
+      nucleotide_level: true
 
-  eval:
-    # Nucleotide-level
-    - _target_: src.metrics.F1Metric
+  inference:
+    - _target_: src.metrics.MCCMetric
       nucleotide_level: true
     - _target_: src.metrics.PrecisionMetric
       nucleotide_level: true
     - _target_: src.metrics.RecallMetric
       nucleotide_level: true
-    - _target_: src.metrics.MCCMetric
-      nucleotide_level: true
-    - _target_: src.metrics.AUCMetric
-      nucleotide_level: true
-    - _target_: src.metrics.APMetric
-      nucleotide_level: true
-    # Sequence-level
     - _target_: src.metrics.F1Metric
-      nucleotide_level: false
-    - _target_: src.metrics.PrecisionMetric
-      nucleotide_level: false
-    - _target_: src.metrics.RecallMetric
-      nucleotide_level: false
-    - _target_: src.metrics.MCCMetric
-      nucleotide_level: false
-    - _target_: src.metrics.WeightedF1Metric
-      nucleotide_level: false
-    - _target_: src.metrics.MacroF1Metric
-      nucleotide_level: false
+      nucleotide_level: true
     - _target_: src.metrics.AUCMetric
-      nucleotide_level: false
+      nucleotide_level: true
     - _target_: src.metrics.APMetric
-      nucleotide_level: false
+      nucleotide_level: true
 
 trainer:
   n_epochs: 100

@@ -49,7 +49,9 @@ class Trainer:
         self.resample_info = resample_info
 
         self.hard_neg_info = hard_neg_info
-        self.hard_neg_mining_freq = config.get("hard_neg_mining_freq", 0)
+        self.hard_neg_mining_freq = config.get(
+            "hard_neg_mining_freq", 0
+        )  # 0 = disabled
         self.hard_neg_ratio = config.get("hard_neg_ratio", 0.5)
 
         self.epochs = config.trainer.n_epochs
@@ -66,7 +68,14 @@ class Trainer:
         self.threshold_tuning_during_training = config.trainer.get(
             "threshold_tuning_during_training", True
         )
+
         self.accumulate_grad_batches = config.trainer.get("accumulate_grad_batches", 1)
+        if self.accumulate_grad_batches > 1:
+            logger.info(
+                f"Gradient accumulation: {self.accumulate_grad_batches} steps "
+                f"(effective batch size = {config.dataloader.batch_size * self.accumulate_grad_batches})"
+            )
+
         self.early_stop_patience = config.trainer.get("early_stop", 0)
         self.epochs_without_improvement = 0
 
@@ -106,6 +115,7 @@ class Trainer:
     def _aggregate_sequence_probs(
         self, nuc_probs: torch.Tensor, mask: torch.Tensor = None
     ) -> torch.Tensor:
+        """Aggregate per-nucleotide probabilities to one sequence score."""
         if hasattr(self.criterion, "aggregate_sequence_probs"):
             seq_prob = self.criterion.aggregate_sequence_probs(nuc_probs, mask=mask)
             if isinstance(seq_prob, tuple):
@@ -136,7 +146,12 @@ class Trainer:
         return topk_probs.mean(dim=1)
 
     def _select_best_threshold(self, probs: torch.Tensor, labels: torch.Tensor):
-        """Select threshold maximizing F1"""
+        """Select threshold maximizing F1; fallback to PR-intersection if needed.
+
+        NOTE:
+        Pure PR-intersection can pick degenerate thresholds where precision=recall=0
+        (no predicted positives), which yields F1=0 while AUC is high.
+        """
         thresholds = torch.linspace(0.01, 0.99, 199)
         best_threshold = 0.5
         best_f1 = -1.0
@@ -168,7 +183,10 @@ class Trainer:
         return best_threshold, best_f1
 
     def _posthoc_calibrate_threshold(self):
-        """Recalibrate threshold once after training using validation predictions."""
+        """Recalibrate threshold once after training on validation predictions.
+
+        This mirrors paper-like post-training threshold calibration.
+        """
         if self.val_dataloader is None:
             logger.info(
                 "Post-hoc threshold calibration skipped: no validation dataloader"
@@ -189,7 +207,7 @@ class Trainer:
         new_threshold, new_f1 = self._select_best_threshold(probs, labels)
         self.best_threshold = float(new_threshold)
         logger.info(
-            f"Post-hoc threshold calibration ({level}-level, objective=max_f1): "
+            f"Post-hoc threshold calibration ({level}-level, objective=pr_intersection): "
             f"{old_threshold:.3f} -> {self.best_threshold:.3f} (val F1={new_f1:.4f})"
         )
 
@@ -197,7 +215,7 @@ class Trainer:
         """Main training loop"""
         for epoch in range(self.start_epoch, self.epochs + 1):
             if self.warmup_enabled and epoch <= self.warmup_epochs:
-                progress = epoch / self.warmup_epochs
+                progress = epoch / self.warmup_epochs  # 0 → 1
                 warmup_lr = self.base_lr * (
                     self.warmup_start_factor
                     + (1.0 - self.warmup_start_factor) * progress
@@ -208,12 +226,14 @@ class Trainer:
                     f"Warmup epoch {epoch}/{self.warmup_epochs}: LR = {warmup_lr:.6f}"
                 )
 
+            logger.info("=" * 60)
             logger.info(f"Epoch {epoch}/{self.epochs}")
             logger.info(
                 f"Current best val F1: {self.best_val_metric:.4f}, Threshold: {self.best_threshold:.3f}"
             )
             current_lr = self.optimizer.param_groups[0]["lr"]
             logger.info(f"Current learning rate: {current_lr:.6f}")
+            logger.info("=" * 60)
 
             if (
                 self.hard_neg_info is not None
@@ -246,14 +266,11 @@ class Trainer:
                             f"val/{metric_name}", metric_value, step=epoch
                         )
 
-                if (
-                    val_metrics.get("f1", val_metrics.get("seq_f1", 0))
-                    > self.best_val_metric
-                ):
-                    self.best_val_metric = val_metrics.get(
-                        "f1", val_metrics.get("seq_f1", 0)
-                    )
-                    self.best_threshold = val_metrics["threshold"]
+                if val_metrics.get("f1", 0) > self.best_val_metric:
+                    self.best_val_metric = val_metrics["f1"]
+                    self.best_threshold = val_metrics[
+                        "threshold"
+                    ]  # lock in threshold for this best F1
                     self.epochs_without_improvement = 0
                     self._save_checkpoint(epoch, is_best=True)
                     logger.info(
@@ -278,9 +295,7 @@ class Trainer:
                         )
                     else:
                         if self.lr_scheduler.mode == "max":
-                            scheduler_metric = val_metrics.get(
-                                "f1", val_metrics.get("seq_f1", 0)
-                            )
+                            scheduler_metric = val_metrics.get("f1", 0)
                             logger.info(
                                 f"ReduceLROnPlateau (mode=max): monitoring val_f1={scheduler_metric:.4f}"
                             )
@@ -294,7 +309,7 @@ class Trainer:
                     self.lr_scheduler.step()
             else:
                 if self.per_batch_scheduler:
-                    pass
+                    pass  # Already stepped per-batch
                 elif not isinstance(
                     self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
                 ):
@@ -337,6 +352,7 @@ class Trainer:
         if self.test_dataloader is not None:
             best_model_path = self.save_dir / "model_best.pth"
             if best_model_path.exists():
+                logger.info("=" * 60)
                 logger.info(
                     f"Loading best model from {best_model_path} for final test evaluation..."
                 )
@@ -353,7 +369,10 @@ class Trainer:
                 )
 
             self._posthoc_calibrate_threshold()
-            logger.info("Running final test evaluation:")
+
+            logger.info("=" * 60)
+            logger.info("Running final test evaluation...")
+            logger.info("=" * 60)
             test_metrics = self._test_epoch()
             self.test_metrics = test_metrics
             logger.info(f"Test metrics: {test_metrics}")
@@ -365,6 +384,7 @@ class Trainer:
                     )
 
     def _set_augmentation(self, enabled: bool):
+        """Toggle data augmentation on the underlying dataset."""
         for dl in [self.train_dataloader, self.val_dataloader, self.test_dataloader]:
             if dl is None:
                 continue
@@ -375,6 +395,7 @@ class Trainer:
                 ds.rc_augment = enabled
 
     def _resample_train_dataloader(self, epoch):
+        """Rebuild train dataloader with freshly sampled negatives (1:1 ratio)."""
         info = self.resample_info
         rng = np.random.RandomState(info["seed"] + epoch)
 
@@ -408,7 +429,18 @@ class Trainer:
         )
 
     def _mine_hard_negatives(self, epoch):
-        """Re-select training negatives using hard-negative mining."""
+        """Re-select training negatives using hard-negative mining.
+
+        Every ``hard_neg_mining_freq`` epochs:
+          1. Run inference on *all* negatives in the pool with the current model.
+          2. Rank by top-k-mean probability (same scoring as seq-level eval).
+          3. Take the top ``hard_neg_ratio`` fraction as **hard** negatives.
+          4. Fill the remaining quota with *random* negatives (diversity floor).
+          5. Rebuild the train dataloader with: all pos + hard neg + random neg.
+
+        The total number of negatives is kept at ``target_ratio * n_pos`` to
+        preserve the same class balance as the regular downsample run.
+        """
         from hydra.utils import instantiate as hydra_instantiate
 
         from src.utils.init_utils import set_worker_seed
@@ -431,7 +463,7 @@ class Trainer:
             batch_size=mine_bs,
             shuffle=False,
             collate_fn=collate_fn,
-            num_workers=0,
+            num_workers=0,  # single-pass; avoid fork overhead
         )
 
         self.model.eval()
@@ -445,7 +477,7 @@ class Trainer:
                     for k, v in batch.items()
                 }
                 outputs = self.model(**batch)
-                logits = outputs["logits"]
+                logits = outputs["logits"]  # [B, L]
                 nuc_probs = torch.sigmoid(logits)
                 mask = batch.get("mask")
 
@@ -464,7 +496,7 @@ class Trainer:
         n_hard = min(int(n_neg_target * self.hard_neg_ratio), len(all_neg_indices))
         n_random = n_neg_target - n_hard
 
-        sorted_by_score = np.argsort(all_scores)[::-1]
+        sorted_by_score = np.argsort(all_scores)[::-1]  # descending
         hard_local = sorted_by_score[:n_hard].tolist()
         remaining_pool = sorted_by_score[n_hard:]
 
@@ -535,8 +567,6 @@ class Trainer:
 
             logits_detached = outputs["logits"].detach()
             batch["logits"] = logits_detached
-            if "seq_logit" in outputs:
-                batch["seq_logit"] = outputs["seq_logit"].detach()
 
             losses = self.criterion(
                 logits=outputs["logits"],
@@ -576,10 +606,7 @@ class Trainer:
         avg_loss = total_loss / len(self.train_dataloader)
         metrics_result = {"loss": avg_loss}
         for m in self.metrics["train"]:
-            result = m.compute()
-            metrics_result[m.name] = (
-                result.item() if hasattr(result, "item") else result
-            )
+            metrics_result[m.name] = m.compute().item()
 
         return metrics_result
 
@@ -588,7 +615,7 @@ class Trainer:
         self.model.eval()
         total_loss = 0
 
-        for m in self.metrics["eval"]:
+        for m in self.metrics["inference"]:
             m.reset()
 
         with torch.no_grad():
@@ -601,14 +628,12 @@ class Trainer:
 
                 outputs = self.model(**batch)
                 batch["logits"] = outputs["logits"]
-                if "seq_logit" in outputs:
-                    batch["seq_logit"] = outputs["seq_logit"]
 
                 losses = self.criterion(**batch)
                 total_loss += losses["loss"].item()
 
                 metric_values = {}
-                for m in self.metrics["eval"]:
+                for m in self.metrics["inference"]:
                     metric_val = m(**batch)
                     metric_values[m.name] = (
                         metric_val.item() if torch.is_tensor(metric_val) else metric_val
@@ -620,11 +645,8 @@ class Trainer:
 
         avg_loss = total_loss / len(dataloader)
         metrics_result = {"loss": avg_loss}
-        for m in self.metrics["eval"]:
-            result = m.compute()
-            metrics_result[m.name] = (
-                result.item() if hasattr(result, "item") else result
-            )
+        for m in self.metrics["inference"]:
+            metrics_result[m.name] = m.compute().item()
 
         return metrics_result
 
@@ -637,14 +659,19 @@ class Trainer:
         metrics["threshold"] = float(self.best_threshold)
         return metrics
 
-    @staticmethod
-    def _reverse_complement_batch(sequence):
-        """Reverse complement a batch of one-hot sequences [B, L, 4] (A,C,G,T)."""
-        rc = sequence.flip(dims=[1])
-        rc = rc[:, :, [3, 2, 1, 0]]
-        return rc
+    def _collect_predictions(self, dataloader, desc, epoch):
+        """
+        Collect predictions from a dataloader.
 
-    def _collect_predictions(self, dataloader, desc, epoch, tta=True):
+        Returns dict with:
+            seq_probs   (Tensor [N_seq]): aggregated per-sequence probabilities
+            seq_labels  (Tensor [N_seq]): 0 or 1 per sequence
+            nuc_probs   (Tensor [N_nuc]): sigmoid(logits) per nucleotide, flattened+masked
+            nuc_labels  (Tensor [N_nuc]): per-nucleotide labels, flattened+masked
+            avg_loss    (float)
+
+        Sequence-level outputs are used for region-level evaluation.
+        """
         self.model.eval()
         self._set_augmentation(False)
         all_seq_probs = []
@@ -653,71 +680,6 @@ class Trainer:
         all_nuc_labels = []
         total_loss = 0
 
-        def _infer_kmax_from_dim(dim):
-            total = 0
-            k = 0
-            while total < dim:
-                k += 1
-                total += 4**k
-                if total == dim:
-                    return k
-            return None
-
-        def _windowed_kmer_from_onehot(seq_tensor, mask_tensor, n_windows, target_dim):
-            # Recompute local-window k-mer features from one-hot RC sequence for TTA.
-            k_max = _infer_kmax_from_dim(target_dim)
-            if k_max is None:
-                return None
-
-            seq_len = seq_tensor.size(0)
-            if mask_tensor is not None and mask_tensor.numel() == seq_len:
-                seq_len = int(mask_tensor.sum().item())
-
-            nuc_map = {0: "A", 1: "C", 2: "G", 3: "T"}
-            seq_slice = seq_tensor[:seq_len]
-            max_vals, idxs = seq_slice.max(dim=1)
-            seq_chars = [
-                nuc_map.get(int(i), "N") if float(v) > 0.999 else "N"
-                for v, i in zip(max_vals, idxs)
-            ]
-            seq_str = "".join(seq_chars)
-
-            window_features = []
-            boundaries = np.linspace(0, len(seq_str), n_windows + 1, dtype=int)
-            for start, end in zip(boundaries[:-1], boundaries[1:]):
-                window_seq = seq_str[start:end]
-                features = []
-                for k in range(1, k_max + 1):
-                    n_possible = 4**k
-                    n_kmers = len(window_seq) - k + 1
-                    counts = [0.0] * n_possible
-                    if n_kmers > 0:
-                        for i in range(n_kmers):
-                            kmer = window_seq[i : i + k]
-                            if "N" in kmer:
-                                continue
-                            idx = 0
-                            for j, base in enumerate(kmer):
-                                idx += {"A": 0, "C": 1, "G": 2, "T": 3}[base] * (
-                                    4 ** (k - 1 - j)
-                                )
-                            counts[idx] += 1.0
-                        denom = sum(counts)
-                        if denom > 0:
-                            counts = [c / denom for c in counts]
-                    features.extend(counts)
-                if len(features) != target_dim:
-                    return None
-                window_features.append(features)
-
-            if len(window_features) != n_windows:
-                return None
-            return torch.tensor(
-                window_features,
-                dtype=seq_tensor.dtype,
-                device=seq_tensor.device,
-            )
-
         with torch.no_grad():
             pbar = tqdm(dataloader, desc=f"{desc} Epoch {epoch}")
             for batch in pbar:
@@ -725,7 +687,7 @@ class Trainer:
                     k: v.to(self.device) if isinstance(v, torch.Tensor) else v
                     for k, v in batch.items()
                 }
-                input_keys = set(batch.keys())
+
                 outputs = self.model(**batch)
                 batch.update(outputs)
 
@@ -746,46 +708,7 @@ class Trainer:
                     all_nuc_labels.append(labels.view(-1).cpu())
 
                 if "seq_logit" in batch:
-                    seq_prob_fwd = torch.sigmoid(batch["seq_logit"]).view(-1)
-
-                    if tta:
-                        rc_seq = self._reverse_complement_batch(batch["sequence"])
-                        rc_batch = {k: batch[k] for k in input_keys}
-                        rc_batch["sequence"] = rc_seq
-
-                        if "kmer_features" in batch:
-                            mask_tensor = batch.get("mask") if "mask" in batch else None
-                            rc_kmers = []
-                            for i in range(rc_seq.size(0)):
-                                rc_feat = _windowed_kmer_from_onehot(
-                                    rc_seq[i],
-                                    mask_tensor[i] if mask_tensor is not None else None,
-                                    batch["kmer_features"].shape[1],
-                                    batch["kmer_features"].shape[2],
-                                )
-                                if rc_feat is None:
-                                    break
-                                rc_kmers.append(rc_feat)
-                            if len(rc_kmers) == rc_seq.size(0):
-                                rc_batch["kmer_features"] = torch.stack(rc_kmers, dim=0)
-                            else:
-                                logger.warning(
-                                    "Unable to recompute RC k-mer features; skipping TTA for this batch"
-                                )
-                                seq_prob = seq_prob_fwd
-                                all_seq_probs.append(seq_prob.cpu())
-                                if labels.dim() > 1:
-                                    seq_lab = (labels.sum(dim=1) > 0).float()
-                                else:
-                                    seq_lab = labels.float()
-                                all_seq_labels.append(seq_lab.cpu())
-                                continue
-                        rc_outputs = self.model(**rc_batch)
-                        seq_prob_rc = torch.sigmoid(rc_outputs["seq_logit"]).view(-1)
-                        seq_prob = 0.5 * (seq_prob_fwd + seq_prob_rc)
-                    else:
-                        seq_prob = seq_prob_fwd
-
+                    seq_prob = torch.sigmoid(batch["seq_logit"]).view(-1)
                     all_seq_probs.append(seq_prob.cpu())
                     if labels.dim() > 1:
                         seq_lab = (labels.sum(dim=1) > 0).float()
@@ -800,6 +723,12 @@ class Trainer:
                     else:
                         seq_lab = labels.float()
                     all_seq_labels.append(seq_lab.cpu())
+
+        if not all_nuc_probs:
+            raise RuntimeError(
+                f"{desc} dataloader produced 0 batches. "
+                "Check that val/test chromosome names in config match those in the FASTA headers."
+            )
 
         avg_loss = total_loss / max(len(dataloader), 1)
 
