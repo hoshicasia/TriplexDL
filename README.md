@@ -79,6 +79,11 @@ python train.py -cn=grummit_triplexnet_improved \
 - `hard_neg_ratio`: доля «сложных» негативов
 
 ### Логирование и чекпоинты
+**Важно**:
+В этом проекте используется CometML для трекинга экспериментов.
+Для того, чтобы запустить трекинг, необходимо создать аккаунт comet.com
+и перед запуском указать свой API:
+export COMET_API_KEY=ВАШ_API
 
 - `writer.run_name`, `writer.experiment_name`, `writer._target_`
 - `trainer.save_dir`, `trainer.save_period`, `trainer.early_stop`
