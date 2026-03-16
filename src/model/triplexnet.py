@@ -29,12 +29,11 @@ class DropPath(nn.Module):
 
 
 class SEBlock(nn.Module):
-    """Squeeze-and-Excitation block."""
+    """Squeeze-and-Excitation block with mask-aware pooling."""
 
     def __init__(self, channels: int, reduction: int = 4):
         super().__init__()
         mid = max(channels // reduction, 8)
-        self.pool = nn.AdaptiveAvgPool1d(1)
         self.fc = nn.Sequential(
             nn.Linear(channels, mid),
             nn.ReLU(inplace=True),
@@ -42,11 +41,13 @@ class SEBlock(nn.Module):
             nn.Sigmoid(),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: [B, C, L] → [B, C, L]"""
-        b, c, _ = x.size()
-        s = self.pool(x).view(b, c)
-        e = self.fc(s).view(b, c, 1)
+    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        if mask is not None:
+            m = mask.unsqueeze(1) 
+            s = (x * m).sum(dim=2) / (m.sum(dim=2) + 1e-8)  
+        else:
+            s = x.mean(dim=2) 
+        e = self.fc(s).view(x.size(0), x.size(1), 1)
         return x * e
 
 
@@ -74,8 +75,11 @@ class DilatedResBlock(nn.Module):
         )
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.drop_path(self.block(x))
+    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        out = x + self.drop_path(self.block(x))
+        if mask is not None:
+            out = out * mask.unsqueeze(1)
+        return out
 
 
 class TriplexNet(nn.Module):
@@ -207,9 +211,9 @@ class TriplexNet(nn.Module):
 
     @staticmethod
     def _init_weights(m):
-        """Kaiming initialization for conv/linear layers."""
+        """Kaiming initialization for conv/linear layers (linear mode for GELU)."""
         if isinstance(m, (nn.Conv1d, nn.Linear)):
-            nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+            nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="linear")
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
         elif isinstance(m, (nn.BatchNorm1d, nn.LayerNorm, nn.GroupNorm)):
@@ -259,16 +263,25 @@ class TriplexNet(nn.Module):
         )
         x = self.stem_proj(x)
 
+        if mask is not None:
+            x = x * mask.unsqueeze(1)
+
         for i, block in enumerate(self.tower):
-            x = block(x)
+            dilated_res, se = block[0], block[1]
+            x = dilated_res(x, mask=mask)
+            x = se(x, mask=mask)
             if i == self.film_mid_idx:
                 gm = self.film_gamma_mid(omics_features).unsqueeze(-1) * 2
                 bm = self.film_beta_mid(omics_features).unsqueeze(-1)
                 x = gm * x + bm
+                if mask is not None:
+                    x = x * mask.unsqueeze(1)
 
         gamma = self.film_gamma(omics_features).unsqueeze(-1) * 2
         beta = self.film_beta(omics_features).unsqueeze(-1)
         x = gamma * x + beta
+        if mask is not None:
+            x = x * mask.unsqueeze(1)
 
         result = {}
         if self.nucleotide_level:

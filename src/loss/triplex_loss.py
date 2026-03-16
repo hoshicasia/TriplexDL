@@ -23,9 +23,6 @@ class TriplexMILLoss(nn.Module):
         smoothness_weight: float = 0.0,
         smoothness_positive_only: bool = True,
         nucleotide_level: bool = True,
-        use_focal: bool = False,
-        focal_alpha: float = 0.25,
-        focal_gamma: float = 2.0,
     ):
         super().__init__()
         self.top_k_ratio = top_k_ratio

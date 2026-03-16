@@ -88,7 +88,7 @@ dataloader:
 
 metrics:
   train:
-    - _target_: src.metrics.MCCMetric
+    - _target_: src.metrics.AUCMetric
       nucleotide_level: false
       use_seq_logit: true
     - _target_: src.metrics.F1Metric

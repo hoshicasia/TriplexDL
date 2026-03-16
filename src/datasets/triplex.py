@@ -1,4 +1,5 @@
 import logging
+from bisect import bisect_left
 from pathlib import Path
 from typing import List, Tuple
 
@@ -121,7 +122,8 @@ class TriplexDataset(Dataset):
     def __getitem__(self, idx):
         chrom, start, end, strand, seq, label = self.data[idx]
 
-        if self.rc_augment and torch.rand(1).item() < 0.5:
+        do_rc = self.rc_augment and torch.rand(1).item() < 0.5
+        if do_rc:
             seq = seq.translate(self._COMPLEMENT)[::-1]
 
         if self.coord_shift_max > 0:
@@ -140,6 +142,15 @@ class TriplexDataset(Dataset):
             sequence[mask_vec] = 0.0
 
         omics_features = self._extract_omics_features(chrom, start, end)
+
+        if do_rc and self.positional_omics:
+            actual_len = min(end - start, self.max_seq_len)
+            if self.omics_feature_mode == "coverage_score":
+                mat = omics_features.reshape(self.max_seq_len, -1)
+            else:
+                mat = omics_features.reshape(self.max_seq_len, -1)
+            mat[:actual_len] = mat[:actual_len][::-1].copy()
+            omics_features = mat.flatten()
 
         actual_seq_len = min(len(seq), self.max_seq_len)
 
@@ -199,21 +210,19 @@ class TriplexDataset(Dataset):
 
         return parsed_data
 
+    _NUC_TO_IDX = np.frompyfunc(lambda c: {"A": 0, "C": 1, "G": 2, "T": 3}.get(c, -1), 1, 1)
+
     def _one_hot_encode(self, sequence: str) -> np.ndarray:
-        """
-        One-hot encode DNA sequence.
-        A, C, G, T -> one-hot vectors
-        N -> [0.25, 0.25, 0.25, 0.25]
-        """
-        nucleotide_dict = {"A": 0, "C": 1, "G": 2, "T": 3}
+        """Vectorized one-hot encoding.  A/C/G/T -> one-hot, N -> 0.25."""
+        seq = sequence[: self.max_seq_len]
+        arr = np.array(list(seq), dtype="U1")
+        idx = np.array([{"A": 0, "C": 1, "G": 2, "T": 3}.get(c, -1) for c in arr], dtype=np.int8)
         encoded = np.zeros((self.max_seq_len, 4), dtype=np.float32)
-
-        for i, nuc in enumerate(sequence[: self.max_seq_len]):
-            if nuc in nucleotide_dict:
-                encoded[i, nucleotide_dict[nuc]] = 1.0
-            elif nuc == "N":
-                encoded[i, :] = 0.25
-
+        valid = idx >= 0
+        rows = np.arange(len(arr))
+        encoded[rows[valid], idx[valid]] = 1.0
+        n_mask = ~valid & (arr == "N") if len(arr) > 0 else np.zeros(0, dtype=bool)
+        encoded[rows[n_mask]] = 0.25
         return encoded
 
     def _load_bed_files(self, bed_dir: Path):
@@ -255,10 +264,14 @@ class TriplexDataset(Dataset):
                     if score > 0:
                         raw_scores.append(score)
 
+            max_width = 0
             for chrom in intervals:
                 intervals[chrom].sort()
+                for s, e, _ in intervals[chrom]:
+                    max_width = max(max_width, e - s)
 
             bed_data[bed_file.stem] = intervals
+            bed_data[bed_file.stem + "__max_width__"] = max_width
             if raw_scores:
                 scale = float(np.percentile(np.array(raw_scores, dtype=np.float32), 95))
                 bed_score_scales[bed_file.stem] = max(scale, 1.0)
@@ -350,11 +363,15 @@ class TriplexDataset(Dataset):
                 score_features.append(0.0)
                 continue
 
+            chrom_intervals = intervals[chrom]
+            max_w = self.bed_data.get(bed_name + "__max_width__", 1_000_000)
+            search_start = max(0, start - max_w)
+            lo = bisect_left(chrom_intervals, (search_start,))
+
             total_overlap = 0
             weighted_score_sum = 0.0
-            for int_start, int_end, raw_score in intervals[chrom]:
-                if int_end < start:
-                    continue
+            for j in range(lo, len(chrom_intervals)):
+                int_start, int_end, raw_score = chrom_intervals[j]
                 if int_start > end:
                     break
 
@@ -365,7 +382,7 @@ class TriplexDataset(Dataset):
                         raw_score, score_scale
                     )
 
-            coverage = total_overlap / region_len if region_len > 0 else 0.0
+            coverage = min(total_overlap / region_len, 1.0) if region_len > 0 else 0.0
             score_mean = weighted_score_sum / region_len if region_len > 0 else 0.0
             coverage_features.append(coverage)
             score_features.append(score_mean)
@@ -393,9 +410,13 @@ class TriplexDataset(Dataset):
             if chrom not in intervals:
                 continue
 
-            for int_start, int_end, raw_score in intervals[chrom]:
-                if int_end < start:
-                    continue
+            chrom_intervals = intervals[chrom]
+            max_w = self.bed_data.get(bed_name + "__max_width__", 1_000_000)
+            search_start = max(0, start - max_w)
+            lo = bisect_left(chrom_intervals, (search_start,))
+
+            for j in range(lo, len(chrom_intervals)):
+                int_start, int_end, raw_score = chrom_intervals[j]
                 if int_start > end:
                     break
 

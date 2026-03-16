@@ -663,18 +663,20 @@ class Trainer:
         metrics["threshold"] = float(self.best_threshold)
         return metrics
 
-    def _collect_predictions(self, dataloader, desc, epoch):
+    def _collect_predictions(self, dataloader, desc, epoch, collect_nuc=True):
         """
         Collect predictions from a dataloader.
+
+        Args:
+            collect_nuc: if False, skip collecting per-nucleotide probs/labels
+                         to save memory when only sequence-level metrics are needed.
 
         Returns dict with:
             seq_probs   (Tensor [N_seq]): aggregated per-sequence probabilities
             seq_labels  (Tensor [N_seq]): 0 or 1 per sequence
-            nuc_probs   (Tensor [N_nuc]): sigmoid(logits) per nucleotide, flattened+masked
-            nuc_labels  (Tensor [N_nuc]): per-nucleotide labels, flattened+masked
+            nuc_probs   (Tensor [N_nuc]): sigmoid(logits) per nucleotide (if collect_nuc)
+            nuc_labels  (Tensor [N_nuc]): per-nucleotide labels (if collect_nuc)
             avg_loss    (float)
-
-        Sequence-level outputs are used for region-level evaluation.
         """
         self.model.eval()
         self._set_augmentation(False)
@@ -683,6 +685,7 @@ class Trainer:
         all_nuc_probs = []
         all_nuc_labels = []
         total_loss = 0
+        n_batches = 0
 
         with torch.no_grad():
             pbar = tqdm(dataloader, desc=f"{desc} Epoch {epoch}")
@@ -697,19 +700,22 @@ class Trainer:
 
                 losses = self.criterion(**batch)
                 total_loss += losses["loss"].item()
+                n_batches += 1
 
                 logits = batch["logits"]
                 labels = batch["label"]
                 mask = batch.get("mask")
 
                 nuc_probs = torch.sigmoid(logits)
-                if mask is not None and logits.shape == mask.shape:
-                    mask_flat = mask.view(-1).bool()
-                    all_nuc_probs.append(nuc_probs.view(-1)[mask_flat].cpu())
-                    all_nuc_labels.append(labels.view(-1)[mask_flat].cpu())
-                else:
-                    all_nuc_probs.append(nuc_probs.view(-1).cpu())
-                    all_nuc_labels.append(labels.view(-1).cpu())
+
+                if collect_nuc:
+                    if mask is not None and logits.shape == mask.shape:
+                        mask_flat = mask.view(-1).bool()
+                        all_nuc_probs.append(nuc_probs.view(-1)[mask_flat].cpu())
+                        all_nuc_labels.append(labels.view(-1)[mask_flat].cpu())
+                    else:
+                        all_nuc_probs.append(nuc_probs.view(-1).cpu())
+                        all_nuc_labels.append(labels.view(-1).cpu())
 
                 if "seq_logit" in batch:
                     seq_prob = torch.sigmoid(batch["seq_logit"]).view(-1)
@@ -728,19 +734,18 @@ class Trainer:
                         seq_lab = labels.float()
                     all_seq_labels.append(seq_lab.cpu())
 
-        if not all_nuc_probs:
+        if n_batches == 0:
             raise RuntimeError(
                 f"{desc} dataloader produced 0 batches. "
                 "Check that val/test chromosome names in config match those in the FASTA headers."
             )
 
-        avg_loss = total_loss / max(len(dataloader), 1)
+        avg_loss = total_loss / max(n_batches, 1)
 
-        result = {
-            "nuc_probs": torch.cat(all_nuc_probs),
-            "nuc_labels": torch.cat(all_nuc_labels).long(),
-            "avg_loss": avg_loss,
-        }
+        result = {"avg_loss": avg_loss}
+        if all_nuc_probs:
+            result["nuc_probs"] = torch.cat(all_nuc_probs)
+            result["nuc_labels"] = torch.cat(all_nuc_labels).long()
         if all_seq_probs:
             result["seq_probs"] = torch.cat(all_seq_probs)
             result["seq_labels"] = torch.cat(all_seq_labels).long()
@@ -764,15 +769,17 @@ class Trainer:
         """Validation with threshold tuning."""
         from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision
 
-        preds = self._collect_predictions(self.val_dataloader, "Val", epoch)
-
-        avg_loss = preds["avg_loss"]
         compute_nuc_metrics = bool(
             self.config.trainer.get("compute_nuc_metrics", False)
         )
+        preds = self._collect_predictions(
+            self.val_dataloader, "Val", epoch, collect_nuc=compute_nuc_metrics
+        )
+
+        avg_loss = preds["avg_loss"]
         nuc_auc = float("nan")
         nuc_ap = float("nan")
-        if compute_nuc_metrics:
+        if compute_nuc_metrics and "nuc_probs" in preds:
             nuc_probs = preds["nuc_probs"]
             nuc_labels = preds["nuc_labels"]
             nuc_auc = BinaryAUROC()(nuc_probs, nuc_labels).item()
@@ -859,15 +866,17 @@ class Trainer:
             f"({threshold_source}, sequence-level)"
         )
 
-        preds = self._collect_predictions(self.test_dataloader, "Test", epoch=0)
-
-        avg_loss = preds["avg_loss"]
         compute_nuc_metrics = bool(
             self.config.trainer.get("compute_nuc_metrics", False)
         )
+        preds = self._collect_predictions(
+            self.test_dataloader, "Test", epoch=0, collect_nuc=compute_nuc_metrics
+        )
+
+        avg_loss = preds["avg_loss"]
         nuc_auc = float("nan")
         nuc_ap = float("nan")
-        if compute_nuc_metrics:
+        if compute_nuc_metrics and "nuc_probs" in preds:
             nuc_probs = preds["nuc_probs"]
             nuc_labels = preds["nuc_labels"]
             nuc_auc = BinaryAUROC()(nuc_probs, nuc_labels).item()
