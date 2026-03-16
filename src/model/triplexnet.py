@@ -43,7 +43,6 @@ class SEBlock(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: [B, C, L] → [B, C, L]"""
         b, c, _ = x.size()
         s = self.pool(x).view(b, c)
         e = self.fc(s).view(b, c, 1)
@@ -98,11 +97,11 @@ class TriplexNet(nn.Module):
         n_kmer_features: int = 0,
         dropout: float = 0.2,
         n_channels: int = 128,
-        n_dilated_blocks: int = 7,  # 7 blocks → RF ≈ 270bp
+        n_dilated_blocks: int = 7,
         kernel_size: int = 3,
         se_reduction: int = 4,
-        drop_path_rate: float = 0.15,  # stochastic depth (linearly increases)
-        aux_loss_weight: float = 0.15,  # weight for auxiliary sequence-level loss
+        drop_path_rate: float = 0.15,
+        aux_loss_weight: float = 0.15,
         nucleotide_level: bool = True,
         kmer_proj_dim: int = 64,
     ):
@@ -111,6 +110,7 @@ class TriplexNet(nn.Module):
         self.aux_loss_weight = aux_loss_weight
         self.n_kmer_features = int(n_kmer_features)
         self.kmer_proj_dim = int(kmer_proj_dim) if self.n_kmer_features > 0 else 0
+        self.head_input_channels = n_channels * 2 + self.kmer_proj_dim
 
         n_groups = min(8, n_channels)
         stem_ch = n_channels // 3
@@ -198,7 +198,7 @@ class TriplexNet(nn.Module):
 
         if nucleotide_level:
             self.head = nn.Sequential(
-                nn.Conv1d(n_channels * 2, n_channels, kernel_size=1),
+                nn.Conv1d(self.head_input_channels, n_channels, kernel_size=1),
                 nn.GroupNorm(n_groups, n_channels),
                 nn.GELU(),
                 nn.Dropout(dropout),
@@ -225,7 +225,6 @@ class TriplexNet(nn.Module):
 
     @staticmethod
     def _init_weights(m):
-        """Kaiming initialization for conv/linear layers."""
         if isinstance(m, (nn.Conv1d, nn.Linear)):
             nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
             if m.bias is not None:
@@ -244,11 +243,20 @@ class TriplexNet(nn.Module):
         Returns:
             [B, C]
         """
-        attn_logits = self.attn_pool_layer(x).squeeze(1)  # [B, L]
+        attn_logits = self.attn_pool_layer(x).squeeze(1)
         if mask is not None:
             attn_logits = attn_logits.masked_fill(~mask.bool(), float("-inf"))
-        attn_weights = torch.softmax(attn_logits, dim=1)  # [B, L]
-        return (x * attn_weights.unsqueeze(1)).sum(dim=2)  # [B, C]
+        attn_weights = torch.softmax(attn_logits, dim=1)
+        return (x * attn_weights.unsqueeze(1)).sum(dim=2)
+
+    @staticmethod
+    def _masked_mean_pool(x, mask):
+        if mask is None:
+            return x.mean(dim=2)
+
+        weights = mask.unsqueeze(1).to(dtype=x.dtype)
+        denom = weights.sum(dim=2).clamp(min=1.0)
+        return (x * weights).sum(dim=2) / denom
 
     def forward(
         self,
@@ -282,19 +290,35 @@ class TriplexNet(nn.Module):
         beta = self.film_beta(omics_features).unsqueeze(-1)
         x = gamma * x + beta
 
-        global_features = [omics_features]
+        local_kmer_map = None
+        pooled_kmer = None
         if self.kmer_proj is not None:
             if kmer_features is None:
                 kmer_features = omics_features.new_zeros(
-                    omics_features.size(0), self.n_kmer_features
+                    omics_features.size(0), 1, self.n_kmer_features
                 )
-            global_features.append(self.kmer_proj(kmer_features))
+            projected_kmers = self.kmer_proj(kmer_features)
+            local_kmer_map = projected_kmers.transpose(1, 2)
+            local_kmer_map = F.interpolate(
+                local_kmer_map,
+                size=x.size(-1),
+                mode="linear",
+                align_corners=False,
+            )
+            pooled_kmer = self._masked_mean_pool(local_kmer_map, mask)
+
+        global_features = [omics_features]
+        if pooled_kmer is not None:
+            global_features.append(pooled_kmer)
 
         result = {}
         if self.nucleotide_level:
             x_global = self._attn_pool(x, mask)
             x_global_bc = x_global.unsqueeze(-1).expand_as(x)
-            x_combined = torch.cat([x, x_global_bc], dim=1)
+            head_inputs = [x, x_global_bc]
+            if local_kmer_map is not None:
+                head_inputs.append(local_kmer_map)
+            x_combined = torch.cat(head_inputs, dim=1)
             logits_pos = self.head(x_combined).squeeze(1)
 
             aux_input = torch.cat([x_global] + global_features, dim=1)

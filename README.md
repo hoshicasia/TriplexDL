@@ -1,4 +1,4 @@
-# TPX: Triplex DNA Prediction
+# TPX
 
 ## Установка и настройка проекта
 
@@ -46,6 +46,28 @@ python train.py -cn=grummit_triplexnet_improved \
   datasets.train.bed_dir=Neural
 ```
 
+## Инференс: скоринг своих регионов (тестировалось только на маленьких синтетических данных, могут быть баги)
+
+Скрипт для применения обученной модели: [scripts/score_regions.py](scripts/score_regions.py)
+
+Требования к входу:
+- FASTA с хедерами вида `>id:any:chr1:12345:12445:+` (координаты обязаны быть внутри хедера)
+- Набор омиксов в формате .BED
+- Чекпоинт вида `model_best.pth`
+
+Пример запуска:
+```bash
+python scripts/score_regions.py \
+  --fasta /abs/path/your_candidates.fa \
+  --bed-dir /abs/path/Neural \
+  --checkpoint saved/<run>/model_best.pth \
+  --out saved/<run>/inference/preds.tsv \
+  --nuc-out saved/<run>/inference/preds.nuc.bedgraph \
+  --batch-size 8
+```
+
+По умолчанию используется `best_threshold` из чекпоинта, но можно задать его как `--threshold` явно. Если нужно только sequence-level предсказание, опцию `--nuc-out` можно не указывать.
+
 ## Важные параметры
 
 ### Разбиение и валидация
@@ -60,7 +82,8 @@ python train.py -cn=grummit_triplexnet_improved \
 - `datasets.train.rc_augment`: reverse-complement аугментация
 - `datasets.train.nuc_mask_prob`: вероятность маскирования нуклеотидов
 - `datasets.train.coord_shift_max`: случайный сдвиг координат
-- `datasets.train.kmer_max_k`: использование k-меров при обучении
+- `datasets.train.kmer_max_k`: максимальная длина k-мера для локальных оконных признаков
+- `datasets.train.kmer_window_count`: число окон для локальных k-мерных признаков
 
 ### Модель, лосс и оптимизация
 
@@ -74,7 +97,6 @@ python train.py -cn=grummit_triplexnet_improved \
 ### Баланс классов и hard negatives
 
 - `target_class_ratio`: отношение neg:pos при обучении
-- `balance_method`: `downsample`, `oversample`, `resample`
 - `hard_neg_mining_freq`: частота hard-negative mining в эпохах (`0` отключает)
 - `hard_neg_ratio`: доля «сложных» негативов
 

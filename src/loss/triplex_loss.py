@@ -18,10 +18,6 @@ class TriplexMILLoss(nn.Module):
         attention_temperature: float = 1.0,
         attention_mix_alpha: float = 0.6,
         attention_entropy_weight: float = 0.0,
-        nucleotide_level: bool = True,
-        use_focal: bool = False,
-        focal_alpha: float = 0.25,
-        focal_gamma: float = 2.0,
     ):
         super().__init__()
         self.top_k_ratio = top_k_ratio
@@ -32,12 +28,6 @@ class TriplexMILLoss(nn.Module):
         self.attention_temperature = max(float(attention_temperature), 1e-3)
         self.attention_mix_alpha = float(attention_mix_alpha)
         self.attention_entropy_weight = float(attention_entropy_weight)
-
-        valid_modes = {"topk", "attention", "noisy_or", "attention_noisy_or"}
-        if self.aggregation_mode not in valid_modes:
-            raise ValueError(
-                f"aggregation_mode must be one of {sorted(valid_modes)}, got {self.aggregation_mode!r}"
-            )
 
     @staticmethod
     def _masked_softmax(scores: torch.Tensor, mask: torch.Tensor = None, dim: int = -1):
@@ -178,12 +168,6 @@ class TriplexMILLoss(nn.Module):
         mask: torch.Tensor = None,
         **batch,
     ):
-        """
-        Args:
-            logits: [B, L] per-nucleotide logits
-            label:  [B, L] per-nucleotide labels (uniform: all 1 or all 0)
-            mask:   [B, L] valid position mask (1=valid, 0=padding)
-        """
         seq_label_hard = self._to_sequence_labels(label, mask=mask)
         seq_label = seq_label_hard
 

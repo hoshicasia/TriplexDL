@@ -20,6 +20,7 @@ datasets:
     nuc_mask_prob: 0.03
     coord_shift_max: 50
     # kmer_max_k: 4
+    # kmer_window_count: 8
 
 optimizer:
   lr: 1.2e-4
