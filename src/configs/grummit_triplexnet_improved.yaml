@@ -36,9 +36,14 @@ warmup:
   warmup_start_factor: 0.05
 
 loss_function:
+  aggregation_mode: "noisy_or"
   label_smoothing: 0.05
-  nuc_loss_weight: 0.08
+  nuc_loss_weight: 0.0
   attention_entropy_weight: 0.01
+  positive_sparsity_weight: 0.02
+  negative_sparsity_weight: 0.0
+  smoothness_weight: 0.01
+  smoothness_positive_only: true
 
 trainer:
   threshold_tuning_during_training: true

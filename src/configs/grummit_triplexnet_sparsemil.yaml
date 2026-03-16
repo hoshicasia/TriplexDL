@@ -8,6 +8,11 @@ loss_function:
   attention_temperature: 0.7
   attention_mix_alpha: 0.6
   attention_entropy_weight: 0.01
+  nuc_loss_weight: 0.0
+  positive_sparsity_weight: 0.02
+  negative_sparsity_weight: 0.0
+  smoothness_weight: 0.01
+  smoothness_positive_only: true
 
 writer:
   run_name: "grummit_triplexnet_sparsemil"

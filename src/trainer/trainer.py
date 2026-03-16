@@ -567,6 +567,8 @@ class Trainer:
 
             logits_detached = outputs["logits"].detach()
             batch["logits"] = logits_detached
+            if "seq_logit" in outputs:
+                batch["seq_logit"] = outputs["seq_logit"].detach()
 
             losses = self.criterion(
                 logits=outputs["logits"],
@@ -628,6 +630,8 @@ class Trainer:
 
                 outputs = self.model(**batch)
                 batch["logits"] = outputs["logits"]
+                if "seq_logit" in outputs:
+                    batch["seq_logit"] = outputs["seq_logit"]
 
                 losses = self.criterion(**batch)
                 total_loss += losses["loss"].item()
@@ -763,14 +767,19 @@ class Trainer:
         preds = self._collect_predictions(self.val_dataloader, "Val", epoch)
 
         avg_loss = preds["avg_loss"]
-        nuc_probs = preds["nuc_probs"]
-        nuc_labels = preds["nuc_labels"]
-
-        nuc_auc = BinaryAUROC()(nuc_probs, nuc_labels).item()
-        nuc_ap = BinaryAveragePrecision()(nuc_probs, nuc_labels).item()
-        logger.info(
-            f"Val nucleotide-level:  ROC-AUC={nuc_auc:.4f}  PR-AUC={nuc_ap:.4f}"
+        compute_nuc_metrics = bool(
+            self.config.trainer.get("compute_nuc_metrics", False)
         )
+        nuc_auc = float("nan")
+        nuc_ap = float("nan")
+        if compute_nuc_metrics:
+            nuc_probs = preds["nuc_probs"]
+            nuc_labels = preds["nuc_labels"]
+            nuc_auc = BinaryAUROC()(nuc_probs, nuc_labels).item()
+            nuc_ap = BinaryAveragePrecision()(nuc_probs, nuc_labels).item()
+            logger.info(
+                f"Val nucleotide-level:  ROC-AUC={nuc_auc:.4f}  PR-AUC={nuc_ap:.4f}"
+            )
 
         if "seq_probs" in preds:
             seq_probs = preds["seq_probs"]
@@ -795,9 +804,17 @@ class Trainer:
             logger.warning(
                 "No seq_logit available, falling back to nucleotide-level evaluation"
             )
+            if not compute_nuc_metrics:
+                raise RuntimeError(
+                    "No `seq_logit`/sequence probs available, and nucleotide metrics are disabled. "
+                    "Enable `model` sequence head (`seq_logit`) or set trainer.compute_nuc_metrics=true."
+                )
+
             seq_auc = nuc_auc
             seq_ap = nuc_ap
 
+            nuc_probs = preds["nuc_probs"]
+            nuc_labels = preds["nuc_labels"]
             best_threshold, best_f1 = self._select_best_threshold(nuc_probs, nuc_labels)
 
             accuracy, precision, recall, f1 = self._metrics_at_threshold(
@@ -814,8 +831,9 @@ class Trainer:
             )
             self.writer.experiment.log_metric("val/seq_roc_auc", seq_auc, step=epoch)
             self.writer.experiment.log_metric("val/seq_pr_auc", seq_ap, step=epoch)
-            self.writer.experiment.log_metric("val/nuc_roc_auc", nuc_auc, step=epoch)
-            self.writer.experiment.log_metric("val/nuc_pr_auc", nuc_ap, step=epoch)
+            if compute_nuc_metrics:
+                self.writer.experiment.log_metric("val/nuc_roc_auc", nuc_auc, step=epoch)
+                self.writer.experiment.log_metric("val/nuc_pr_auc", nuc_ap, step=epoch)
 
         return {
             "loss": avg_loss,
@@ -844,14 +862,19 @@ class Trainer:
         preds = self._collect_predictions(self.test_dataloader, "Test", epoch=0)
 
         avg_loss = preds["avg_loss"]
-        nuc_probs = preds["nuc_probs"]
-        nuc_labels = preds["nuc_labels"]
-
-        nuc_auc = BinaryAUROC()(nuc_probs, nuc_labels).item()
-        nuc_ap = BinaryAveragePrecision()(nuc_probs, nuc_labels).item()
-        logger.info(
-            f"Test nucleotide-level:  ROC-AUC={nuc_auc:.4f}  PR-AUC={nuc_ap:.4f}"
+        compute_nuc_metrics = bool(
+            self.config.trainer.get("compute_nuc_metrics", False)
         )
+        nuc_auc = float("nan")
+        nuc_ap = float("nan")
+        if compute_nuc_metrics:
+            nuc_probs = preds["nuc_probs"]
+            nuc_labels = preds["nuc_labels"]
+            nuc_auc = BinaryAUROC()(nuc_probs, nuc_labels).item()
+            nuc_ap = BinaryAveragePrecision()(nuc_probs, nuc_labels).item()
+            logger.info(
+                f"Test nucleotide-level:  ROC-AUC={nuc_auc:.4f}  PR-AUC={nuc_ap:.4f}"
+            )
 
         if "seq_probs" in preds:
             seq_probs = preds["seq_probs"]
@@ -867,6 +890,13 @@ class Trainer:
                 seq_probs, seq_labels, threshold
             )
         else:
+            if not compute_nuc_metrics:
+                raise RuntimeError(
+                    "No `seq_logit`/sequence probs available, and nucleotide metrics are disabled. "
+                    "Enable `model` sequence head (`seq_logit`) or set trainer.compute_nuc_metrics=true."
+                )
+            nuc_probs = preds["nuc_probs"]
+            nuc_labels = preds["nuc_labels"]
             seq_auc = nuc_auc
             seq_ap = nuc_ap
             accuracy, precision, recall, f1 = self._metrics_at_threshold(

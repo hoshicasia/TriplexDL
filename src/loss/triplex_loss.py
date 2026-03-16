@@ -18,6 +18,10 @@ class TriplexMILLoss(nn.Module):
         attention_temperature: float = 1.0,
         attention_mix_alpha: float = 0.6,
         attention_entropy_weight: float = 0.0,
+        positive_sparsity_weight: float = 0.0,
+        negative_sparsity_weight: float = 0.0,
+        smoothness_weight: float = 0.0,
+        smoothness_positive_only: bool = True,
         nucleotide_level: bool = True,
         use_focal: bool = False,
         focal_alpha: float = 0.25,
@@ -32,6 +36,10 @@ class TriplexMILLoss(nn.Module):
         self.attention_temperature = max(float(attention_temperature), 1e-3)
         self.attention_mix_alpha = float(attention_mix_alpha)
         self.attention_entropy_weight = float(attention_entropy_weight)
+        self.positive_sparsity_weight = float(positive_sparsity_weight)
+        self.negative_sparsity_weight = float(negative_sparsity_weight)
+        self.smoothness_weight = float(smoothness_weight)
+        self.smoothness_positive_only = bool(smoothness_positive_only)
 
         valid_modes = {"topk", "attention", "noisy_or", "attention_noisy_or"}
         if self.aggregation_mode not in valid_modes:
@@ -61,6 +69,29 @@ class TriplexMILLoss(nn.Module):
         if mask is not None:
             return ((label * mask).sum(dim=1) > 0).float()
         return (label.sum(dim=1) > 0).float()
+
+    @staticmethod
+    def _masked_mean_per_sequence(
+        values: torch.Tensor, mask: torch.Tensor = None
+    ) -> torch.Tensor:
+        if mask is None or values.shape != mask.shape:
+            return values.mean(dim=1)
+        denom = mask.sum(dim=1).clamp(min=1.0)
+        return (values * mask).sum(dim=1) / denom
+
+    @staticmethod
+    def _tv_smoothness(
+        probs: torch.Tensor, mask: torch.Tensor = None
+    ) -> torch.Tensor:
+        if probs.size(1) < 2:
+            return torch.zeros((), device=probs.device, dtype=probs.dtype)
+
+        diffs = torch.abs(probs[:, 1:] - probs[:, :-1])
+        if mask is None or probs.shape != mask.shape:
+            return diffs.mean()
+
+        pair_mask = (mask[:, 1:] * mask[:, :-1]).float()
+        return (diffs * pair_mask).sum() / (pair_mask.sum() + 1e-8)
 
     def _aggregate_topk(
         self, probs: torch.Tensor, mask: torch.Tensor = None
@@ -212,6 +243,33 @@ class TriplexMILLoss(nn.Module):
 
         if self.attention_entropy_weight > 0 and attn_entropy is not None:
             total_loss = total_loss + self.attention_entropy_weight * attn_entropy
+
+        nuc_probs = torch.sigmoid(logits)
+        mean_prob_per_seq = self._masked_mean_per_sequence(nuc_probs, mask=mask)
+
+        if self.positive_sparsity_weight > 0:
+            pos_rows = seq_label_hard > 0.5
+            if pos_rows.any():
+                pos_sparse = mean_prob_per_seq[pos_rows].mean()
+                total_loss = total_loss + self.positive_sparsity_weight * pos_sparse
+
+        if self.negative_sparsity_weight > 0:
+            neg_rows = seq_label_hard <= 0.5
+            if neg_rows.any():
+                neg_sparse = mean_prob_per_seq[neg_rows].mean()
+                total_loss = total_loss + self.negative_sparsity_weight * neg_sparse
+
+        if self.smoothness_weight > 0:
+            if self.smoothness_positive_only:
+                pos_rows = seq_label_hard > 0.5
+                if pos_rows.any():
+                    pos_probs = nuc_probs[pos_rows]
+                    pos_mask = mask[pos_rows] if mask is not None else None
+                    smooth = self._tv_smoothness(pos_probs, mask=pos_mask)
+                    total_loss = total_loss + self.smoothness_weight * smooth
+            else:
+                smooth = self._tv_smoothness(nuc_probs, mask=mask)
+                total_loss = total_loss + self.smoothness_weight * smooth
 
         if self.nuc_loss_weight > 0:
             smooth_label = label.float()

@@ -18,11 +18,17 @@ class BaseMetric(Metric):
     """
 
     def __init__(
-        self, name: str = None, nucleotide_level: bool = False, *args, **kwargs
+        self,
+        name: str = None,
+        nucleotide_level: bool = False,
+        use_seq_logit: bool = True,
+        *args,
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.name = name if name is not None else self.__class__.__name__
         self.nucleotide_level = nucleotide_level
+        self.use_seq_logit = bool(use_seq_logit)
         self.metric = None
 
     def __call__(
@@ -42,10 +48,25 @@ class BaseMetric(Metric):
                 label_flat = label_flat[mask_flat]
 
             return self.update_and_compute(probs, label_flat)
-        else:
-            probs = torch.sigmoid(logits.squeeze())
-            label = label.long()
-            return self.update_and_compute(probs, label)
+
+        seq_logit = kwargs.get("seq_logit") if self.use_seq_logit else None
+        if seq_logit is not None:
+            probs = torch.sigmoid(seq_logit.view(-1))
+            if label.dim() > 1:
+                seq_label = (label.sum(dim=1) > 0).long()
+            else:
+                seq_label = label.long().view(-1)
+            return self.update_and_compute(probs, seq_label)
+
+        if logits.dim() == 2:
+            raise ValueError(
+                "Sequence-level metric requested but got per-position logits without `seq_logit`. "
+                "Enable/emit `seq_logit` from the model or set nucleotide_level=True."
+            )
+
+        probs = torch.sigmoid(logits.view(-1))
+        seq_label = label.long().view(-1)
+        return self.update_and_compute(probs, seq_label)
 
     def update_and_compute(self, probs, label):
         self.update(probs, label)

@@ -16,6 +16,7 @@ trainer:
   save_period: 5
   resume_from: null
   threshold_tuning_during_training: true
+  compute_nuc_metrics: false
   early_stop: 20
   device: "auto"
   log_step: 10
@@ -36,10 +37,17 @@ model:
 
 loss_function:
   _target_: src.loss.TriplexMILLoss
-  top_k_ratio: 1.0
+  # Prefer top-k MIL pooling over noisy-or to reduce sequence-length bias.
+  # Interprets a positive region as "contains a small positive subregion".
+  top_k_ratio: 0.05
+  aggregation_mode: "topk"
   pos_weight: 2.0
-  nuc_loss_weight: 0.3
+  nuc_loss_weight: 0.0
   label_smoothing: 0.05
+  positive_sparsity_weight: 0.02
+  negative_sparsity_weight: 0.0
+  smoothness_weight: 0.01
+  smoothness_positive_only: true
 
 
 optimizer:
@@ -81,23 +89,31 @@ dataloader:
 metrics:
   train:
     - _target_: src.metrics.MCCMetric
-      nucleotide_level: true
+      nucleotide_level: false
+      use_seq_logit: true
     - _target_: src.metrics.F1Metric
-      nucleotide_level: true
+      nucleotide_level: false
+      use_seq_logit: true
 
   inference:
     - _target_: src.metrics.MCCMetric
-      nucleotide_level: true
+      nucleotide_level: false
+      use_seq_logit: true
     - _target_: src.metrics.PrecisionMetric
-      nucleotide_level: true
+      nucleotide_level: false
+      use_seq_logit: true
     - _target_: src.metrics.RecallMetric
-      nucleotide_level: true
+      nucleotide_level: false
+      use_seq_logit: true
     - _target_: src.metrics.F1Metric
-      nucleotide_level: true
+      nucleotide_level: false
+      use_seq_logit: true
     - _target_: src.metrics.AUCMetric
-      nucleotide_level: true
+      nucleotide_level: false
+      use_seq_logit: true
     - _target_: src.metrics.APMetric
-      nucleotide_level: true
+      nucleotide_level: false
+      use_seq_logit: true
 
 writer:
   _target_: src.logger.comet_writer.CometMLWriter
