@@ -135,13 +135,14 @@ class TriplexNet(nn.Module):
             nn.Dropout(dropout * 0.5),
         )
 
+        dilation_cycle = [1, 2, 4, 8, 16, 32, 64]
         dp_rates = [
             drop_path_rate * i / max(n_dilated_blocks - 1, 1)
             for i in range(n_dilated_blocks)
         ]
         self.tower = nn.ModuleList()
         for i in range(n_dilated_blocks):
-            dilation = 2**i
+            dilation = dilation_cycle[i % len(dilation_cycle)]
             self.tower.append(
                 nn.Sequential(
                     DilatedResBlock(
@@ -157,6 +158,9 @@ class TriplexNet(nn.Module):
             )
 
         self.film_mid_idx = n_dilated_blocks // 2
+
+        self.film_norm_mid = nn.GroupNorm(n_groups, n_channels)
+        self.film_norm_final = nn.GroupNorm(n_groups, n_channels)
 
         self.film_gamma_mid = nn.Sequential(
             nn.Linear(n_omics_features, n_channels),
@@ -182,21 +186,26 @@ class TriplexNet(nn.Module):
             nn.Linear(n_channels, n_channels),
         )
 
-        self.attn_pool_layer = nn.Conv1d(n_channels, 1, kernel_size=1)
+        attn_mid = max(n_channels // 4, 16)
+        self.attn_pool_layer = nn.Sequential(
+            nn.Conv1d(n_channels, attn_mid, kernel_size=1),
+            nn.Tanh(),
+            nn.Conv1d(attn_mid, 1, kernel_size=1),
+        )
 
         if nucleotide_level:
             self.head = nn.Sequential(
-                nn.Conv1d(n_channels * 2, n_channels, kernel_size=1),
+                nn.Conv1d(n_channels * 2, n_channels, kernel_size=5, padding=2),
                 nn.GroupNorm(n_groups, n_channels),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Conv1d(n_channels, 1, kernel_size=1),
             )
             self.aux_head = nn.Sequential(
-                nn.Linear(n_channels, 64),
+                nn.Linear(n_channels, n_channels // 2),
                 nn.GELU(),
                 nn.Dropout(dropout),
-                nn.Linear(64, 1),
+                nn.Linear(n_channels // 2, 1),
             )
         else:
             self.head = nn.Sequential(
@@ -235,8 +244,7 @@ class TriplexNet(nn.Module):
         return (x * m).sum(dim=2) / (m.sum(dim=2) + 1e-8)  # [B, C]
 
     def _attn_pool(self, x, mask):
-        """Attention-weighted pooling: learns which positions matter most
-        for the global sequence representation.
+        """Gated attention pooling (Ilse et al., 2018 style).
 
         Args:
             x:    [B, C, L]
@@ -273,13 +281,13 @@ class TriplexNet(nn.Module):
             if i == self.film_mid_idx:
                 gm = self.film_gamma_mid(omics_features).unsqueeze(-1) * 2
                 bm = self.film_beta_mid(omics_features).unsqueeze(-1)
-                x = gm * x + bm
+                x = self.film_norm_mid(gm * x + bm)
                 if mask is not None:
                     x = x * mask.unsqueeze(1)
 
         gamma = self.film_gamma(omics_features).unsqueeze(-1) * 2
         beta = self.film_beta(omics_features).unsqueeze(-1)
-        x = gamma * x + beta
+        x = self.film_norm_final(gamma * x + beta)
         if mask is not None:
             x = x * mask.unsqueeze(1)
 
