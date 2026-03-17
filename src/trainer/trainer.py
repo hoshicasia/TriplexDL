@@ -568,14 +568,10 @@ class Trainer:
             if "seq_logit" in outputs:
                 batch["seq_logit"] = outputs["seq_logit"].detach()
 
-            loss_kwargs = {}
-            if "sample_weight" in batch:
-                loss_kwargs["sample_weight"] = batch["sample_weight"]
             losses = self.criterion(
                 logits=outputs["logits"],
                 label=batch["label"],
                 mask=batch.get("mask"),
-                **loss_kwargs,
             )
             loss = losses["loss"]
 
@@ -635,8 +631,7 @@ class Trainer:
                 if "seq_logit" in outputs:
                     batch["seq_logit"] = outputs["seq_logit"]
 
-                eval_batch = {k: v for k, v in batch.items() if k != "sample_weight"}
-                losses = self.criterion(**eval_batch)
+                losses = self.criterion(**batch)
                 total_loss += losses["loss"].item()
 
                 metric_values = {}
@@ -687,7 +682,7 @@ class Trainer:
         all_seq_labels = []
         all_nuc_probs = []
         all_nuc_labels = []
-        all_chrom_ids = []
+        all_chroms = []
         total_loss = 0
         n_batches = 0
 
@@ -702,8 +697,7 @@ class Trainer:
                 outputs = self.model(**batch)
                 batch.update(outputs)
 
-                eval_batch = {k: v for k, v in batch.items() if k != "sample_weight"}
-                losses = self.criterion(**eval_batch)
+                losses = self.criterion(**batch)
                 total_loss += losses["loss"].item()
                 n_batches += 1
 
@@ -711,8 +705,8 @@ class Trainer:
                 labels = batch["label"]
                 mask = batch.get("mask")
 
-                if "chrom_id" in batch:
-                    all_chrom_ids.append(batch["chrom_id"].cpu())
+                if "chrom" in batch:
+                    all_chroms.extend(batch["chrom"])
 
                 nuc_probs = torch.sigmoid(logits)
 
@@ -757,8 +751,8 @@ class Trainer:
         if all_seq_probs:
             result["seq_probs"] = torch.cat(all_seq_probs)
             result["seq_labels"] = torch.cat(all_seq_labels).long()
-        if all_chrom_ids:
-            result["chrom_ids"] = torch.cat(all_chrom_ids)
+        if all_chroms:
+            result["chroms"] = all_chroms
 
         return result
 
@@ -865,22 +859,24 @@ class Trainer:
             "threshold": best_threshold,
         }
 
-    def _per_chrom_threshold_report(self, seq_probs, seq_labels, chrom_ids, global_threshold):
+    def _per_chrom_threshold_report(self, seq_probs, seq_labels, chroms, global_threshold):
         """Log per-chromosome F1 at global threshold and at per-chromosome best threshold."""
-        id_to_chrom = getattr(self, "id_to_chrom", {})
-        unique_ids = sorted(chrom_ids.unique().tolist())
+        import numpy as np
+
+        chrom_arr = np.array(chroms)
+        unique_chroms = sorted(set(chroms))
 
         logger.info("Per-chromosome test diagnostics:")
         logger.info(f"  {'Chrom':<8} {'N':>5} {'Pos':>4} {'Neg':>4}  "
                      f"{'F1@global':>9} {'BestThr':>7} {'F1@best':>7}")
 
-        for cid in unique_ids:
-            mask = chrom_ids == cid
-            c_probs = seq_probs[mask]
-            c_labels = seq_labels[mask]
+        for chrom_name in unique_chroms:
+            mask_np = chrom_arr == chrom_name
+            indices = torch.from_numpy(np.where(mask_np)[0])
+            c_probs = seq_probs[indices]
+            c_labels = seq_labels[indices]
             n_pos = int(c_labels.sum())
             n_neg = int(len(c_labels) - n_pos)
-            chrom_name = id_to_chrom.get(cid, f"id{cid}")
 
             _, _, _, f1_global = self._metrics_at_threshold(c_probs, c_labels, global_threshold)
 
@@ -933,9 +929,9 @@ class Trainer:
                 f"Test seq-level best threshold: {best_threshold:.3f} (F1={best_f1:.4f})"
             )
 
-            if "chrom_ids" in preds:
+            if "chroms" in preds:
                 self._per_chrom_threshold_report(
-                    seq_probs, seq_labels, preds["chrom_ids"], best_threshold
+                    seq_probs, seq_labels, preds["chroms"], best_threshold
                 )
 
             accuracy, precision, recall, f1 = self._metrics_at_threshold(

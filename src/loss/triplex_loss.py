@@ -228,16 +228,12 @@ class TriplexMILLoss(nn.Module):
             seq_logit, seq_label, reduction="none"
         )
 
-        ext_weights = batch.get("sample_weight", None)
-        if ext_weights is not None:
-            sample_weights = ext_weights.to(losses.device)
-        else:
-            pos_mask = seq_label_hard > 0.5
-            sample_weights = torch.where(
-                pos_mask,
-                torch.full_like(losses, self.pos_weight),
-                torch.ones_like(losses),
-            )
+        pos_mask = seq_label_hard > 0.5
+        sample_weights = torch.where(
+            pos_mask,
+            torch.full_like(losses, self.pos_weight),
+            torch.ones_like(losses),
+        )
         mil_loss = (losses * sample_weights).sum() / (sample_weights.sum() + 1e-8)
 
         total_loss = mil_loss

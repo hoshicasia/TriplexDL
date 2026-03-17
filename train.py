@@ -666,21 +666,6 @@ def _build_fold(
             all_chromosomes=chromosomes,
         )
 
-    chrom_class_counts = Counter(
-        (chromosomes[i], labels[i]) for i in train_indices
-    )
-    n_groups = len(chrom_class_counts)
-    n_train = len(train_indices)
-    full_dataset.sample_weights = {}
-    for i in train_indices:
-        key = (chromosomes[i], labels[i])
-        full_dataset.sample_weights[int(i)] = n_train / (n_groups * chrom_class_counts[key])
-    logger.info(
-        f"{fold_name} Inverse-frequency weights: {n_groups} (chrom, class) groups, "
-        f"weight range [{min(full_dataset.sample_weights.values()):.3f}, "
-        f"{max(full_dataset.sample_weights.values()):.3f}]"
-    )
-
     logger.info(f"\n{fold_name} Chromosome distribution by split:")
     for split_name, split_idx in [
         ("Train", train_indices),
@@ -824,7 +809,6 @@ def _build_fold(
         resample_info=resample_info,
         hard_neg_info=hard_neg_info,
     )
-    trainer.id_to_chrom = getattr(full_dataset, "id_to_chrom", {})
     trainer.train()
 
     result = {

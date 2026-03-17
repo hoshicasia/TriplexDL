@@ -37,9 +37,4 @@ def collate_fn(dataset_items: list[dict]):
             [item["chrom_id"] for item in dataset_items]
         )
 
-    if "sample_weight" in dataset_items[0]:
-        result_batch["sample_weight"] = torch.stack(
-            [item["sample_weight"] for item in dataset_items]
-        )
-
     return result_batch
