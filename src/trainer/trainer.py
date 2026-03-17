@@ -101,7 +101,11 @@ class Trainer:
             logger.info("Using per-batch scheduler (OneCycleLR) - warmup is built-in")
             self.warmup_enabled = False
 
+        self.tta_enabled = config.trainer.get("tta", False)
+
         logger.info(f"Trainer initialized. Saving to: {self.save_dir}")
+        if self.tta_enabled:
+            logger.info("Test-time augmentation (TTA) enabled: forward + reverse-complement averaging")
         if start_epoch > 1:
             logger.info(f"Resuming training from epoch {start_epoch}")
             logger.info(f"Best threshold: {self.best_threshold:.3f}")
@@ -345,8 +349,41 @@ class Trainer:
             ds = dl.dataset
             while hasattr(ds, "dataset"):
                 ds = ds.dataset
-            if hasattr(ds, "rc_augment"):
-                ds.rc_augment = enabled
+            if hasattr(ds, "training"):
+                ds.training = enabled
+
+    def _set_force_rc(self, value):
+        for dl in [self.train_dataloader, self.val_dataloader, self.test_dataloader]:
+            if dl is None:
+                continue
+            ds = dl.dataset
+            while hasattr(ds, "dataset"):
+                ds = ds.dataset
+            if hasattr(ds, "_force_rc"):
+                ds._force_rc = value
+
+    def _collect_predictions_with_tta(self, dataloader, desc, epoch, collect_nuc=True):
+        self._set_force_rc(False)
+        fwd = self._collect_predictions(dataloader, f"{desc}[fwd]", epoch, collect_nuc)
+
+        self._set_force_rc(True)
+        rc = self._collect_predictions(dataloader, f"{desc}[RC]", epoch, collect_nuc)
+
+        self._set_force_rc(None)
+
+        result = {"avg_loss": (fwd["avg_loss"] + rc["avg_loss"]) / 2}
+        if "seq_probs" in fwd and "seq_probs" in rc:
+            result["seq_probs"] = (fwd["seq_probs"] + rc["seq_probs"]) / 2
+            result["seq_labels"] = fwd["seq_labels"]
+        elif "seq_probs" in fwd:
+            result["seq_probs"] = fwd["seq_probs"]
+            result["seq_labels"] = fwd["seq_labels"]
+        if collect_nuc and "nuc_probs" in fwd:
+            result["nuc_probs"] = fwd["nuc_probs"]
+            result["nuc_labels"] = fwd["nuc_labels"]
+
+        logger.info(f"TTA: averaged forward + RC predictions for {desc}")
+        return result
 
     def _resample_train_dataloader(self, epoch):
         info = self.resample_info
@@ -694,9 +731,14 @@ class Trainer:
         compute_nuc_metrics = bool(
             self.config.trainer.get("compute_nuc_metrics", False)
         )
-        preds = self._collect_predictions(
-            self.val_dataloader, "Val", epoch, collect_nuc=compute_nuc_metrics
-        )
+        if self.tta_enabled:
+            preds = self._collect_predictions_with_tta(
+                self.val_dataloader, "Val", epoch, collect_nuc=compute_nuc_metrics
+            )
+        else:
+            preds = self._collect_predictions(
+                self.val_dataloader, "Val", epoch, collect_nuc=compute_nuc_metrics
+            )
 
         avg_loss = preds["avg_loss"]
         nuc_auc = float("nan")
@@ -778,18 +820,19 @@ class Trainer:
         }
 
     def _test_epoch(self):
-<<<<<<< Updated upstream
-        """Final test evaluation with threshold tuned on test predictions."""
-=======
->>>>>>> Stashed changes
         from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision
 
         compute_nuc_metrics = bool(
             self.config.trainer.get("compute_nuc_metrics", False)
         )
-        preds = self._collect_predictions(
-            self.test_dataloader, "Test", epoch=0, collect_nuc=compute_nuc_metrics
-        )
+        if self.tta_enabled:
+            preds = self._collect_predictions_with_tta(
+                self.test_dataloader, "Test", epoch=0, collect_nuc=compute_nuc_metrics
+            )
+        else:
+            preds = self._collect_predictions(
+                self.test_dataloader, "Test", epoch=0, collect_nuc=compute_nuc_metrics
+            )
 
         avg_loss = preds["avg_loss"]
         nuc_auc = float("nan")

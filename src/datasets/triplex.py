@@ -52,6 +52,8 @@ class TriplexDataset(Dataset):
         )
         self.omics_feature_mode = omics_feature_mode
         self.score_transform = score_transform
+        self.training = True
+        self._force_rc = None
 
         valid_modes = {"coverage", "score_mean", "coverage_score"}
         if self.omics_feature_mode not in valid_modes:
@@ -98,11 +100,16 @@ class TriplexDataset(Dataset):
     def __getitem__(self, idx):
         chrom, start, end, strand, seq, label = self.data[idx]
 
-        do_rc = self.rc_augment and torch.rand(1).item() < 0.5
+        if self._force_rc is not None:
+            do_rc = self._force_rc
+        elif self.training and self.rc_augment:
+            do_rc = torch.rand(1).item() < 0.5
+        else:
+            do_rc = False
         if do_rc:
             seq = seq.translate(self._COMPLEMENT)[::-1]
 
-        if self.coord_shift_max > 0:
+        if self.training and self.coord_shift_max > 0:
             shift = int(
                 torch.randint(
                     -self.coord_shift_max, self.coord_shift_max + 1, (1,)
@@ -113,7 +120,7 @@ class TriplexDataset(Dataset):
 
         sequence = self._one_hot_encode(seq)
 
-        if self.nuc_mask_prob > 0.0:
+        if self.training and self.nuc_mask_prob > 0.0:
             mask_vec = np.random.rand(sequence.shape[0]) < self.nuc_mask_prob
             sequence[mask_vec] = 0.0
 
@@ -145,10 +152,6 @@ class TriplexDataset(Dataset):
             "sequence": torch.FloatTensor(sequence),
             "omics_features": torch.FloatTensor(omics_features),
             "label": labels,
-<<<<<<< Updated upstream
-            "chrom": chrom,
-=======
->>>>>>> Stashed changes
         }
 
         if mask is not None:
