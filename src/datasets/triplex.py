@@ -128,12 +128,7 @@ class TriplexDataset(Dataset):
 
         if do_rc and self.positional_omics:
             actual_len = min(end - start, self.max_seq_len)
-            if self.omics_feature_mode == "coverage_score":
-                mat = omics_features.reshape(self.max_seq_len, -1)
-            else:
-                mat = omics_features.reshape(self.max_seq_len, -1)
-            mat[:actual_len] = mat[:actual_len][::-1].copy()
-            omics_features = mat.flatten()
+            omics_features[:actual_len] = omics_features[:actual_len][::-1].copy()
 
         actual_seq_len = min(len(seq), self.max_seq_len)
 
@@ -300,10 +295,6 @@ class TriplexDataset(Dataset):
             )
 
     def _infer_feature_dim(self) -> int:
-        if self.positional_omics:
-            if self.omics_feature_mode == "coverage_score":
-                return self.max_seq_len * self.base_feature_dim * 2
-            return self.max_seq_len * self.base_feature_dim
         if self.omics_feature_mode == "coverage_score":
             return self.base_feature_dim * 2
         return self.base_feature_dim
@@ -406,7 +397,7 @@ class TriplexDataset(Dataset):
         score_features[region_len:, :] = 0.0
 
         if self.omics_feature_mode == "coverage":
-            return cov_features.flatten()
+            return cov_features
         if self.omics_feature_mode == "score_mean":
-            return score_features.flatten()
-        return np.concatenate([cov_features, score_features], axis=1).flatten()
+            return score_features
+        return np.concatenate([cov_features, score_features], axis=1)

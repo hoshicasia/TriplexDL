@@ -10,8 +10,13 @@ trainer:
   threshold_tuning_during_training: true
   tta: true
 
+datasets:
+  train:
+    positional_omics: true
+
 model:
   aux_loss_weight: 0.7
+  positional_omics: true
 
 loss_function:
   _target_: src.loss.TriplexMILLoss
