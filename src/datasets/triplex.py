@@ -1,6 +1,5 @@
 import logging
 from bisect import bisect_left
-from itertools import product as iterproduct
 from pathlib import Path
 from typing import List, Tuple
 
@@ -97,13 +96,11 @@ class TriplexDataset(Dataset):
             bed_dir
         )
         self.base_feature_dim = len(self.bed_names)
-        self.kmer_dim = 4 + 16 + 64  # k=1,2,3
         self.feature_dim = self._infer_feature_dim()
         logger.info(f"  Loaded {len(self.bed_names)} omics features")
         logger.info(
             f"  Omics mode={self.omics_feature_mode}, score_transform={self.score_transform}, "
-            f"omics_dim={self.feature_dim - self.kmer_dim}, kmer_dim={self.kmer_dim}, "
-            f"total feature_dim={self.feature_dim}"
+            f"feature_dim={self.feature_dim}"
         )
 
         self.data = []
@@ -149,7 +146,6 @@ class TriplexDataset(Dataset):
             sequence[mask_vec] = 0.0
 
         omics_features = self._extract_omics_features(chrom, start, end)
-        kmer_features = self._compute_kmer_features(seq)
 
         if do_rc and self.positional_omics:
             actual_len = min(end - start, self.max_seq_len)
@@ -173,11 +169,9 @@ class TriplexDataset(Dataset):
             labels = torch.LongTensor([label])[0]
             mask = None
 
-        combined_features = np.concatenate([omics_features, kmer_features])
-
         result = {
             "sequence": torch.FloatTensor(sequence),
-            "omics_features": torch.FloatTensor(combined_features),
+            "omics_features": torch.FloatTensor(omics_features),
             "label": labels,
             "chrom": chrom,
             "chrom_id": torch.tensor(self.chrom_to_id[chrom], dtype=torch.long),
@@ -235,36 +229,6 @@ class TriplexDataset(Dataset):
         n_mask = ~valid & (arr == "N") if len(arr) > 0 else np.zeros(0, dtype=bool)
         encoded[rows[n_mask]] = 0.25
         return encoded
-
-    _KMER_TABLES = {}
-
-    @classmethod
-    def _build_kmer_table(cls, k: int):
-        bases = "ACGT"
-        kmers = ["".join(p) for p in iterproduct(bases, repeat=k)]
-        return {km: i for i, km in enumerate(kmers)}
-
-    @classmethod
-    def _compute_kmer_features(cls, seq: str, max_k: int = 3) -> np.ndarray:
-        """Compute normalized k-mer frequencies for k=1..max_k.
-        Returns a vector of length sum(4^k for k in 1..max_k) = 84 for max_k=3.
-        """
-        features = []
-        seq_upper = seq.upper()
-        for k in range(1, max_k + 1):
-            if k not in cls._KMER_TABLES:
-                cls._KMER_TABLES[k] = cls._build_kmer_table(k)
-            table = cls._KMER_TABLES[k]
-            counts = np.zeros(len(table), dtype=np.float32)
-            n_windows = max(len(seq_upper) - k + 1, 1)
-            for i in range(len(seq_upper) - k + 1):
-                sub = seq_upper[i : i + k]
-                idx = table.get(sub)
-                if idx is not None:
-                    counts[idx] += 1
-            counts /= n_windows
-            features.append(counts)
-        return np.concatenate(features)
 
     def _load_bed_files(self, bed_dir: Path):
         bed_files = sorted(list(bed_dir.glob("*.bed")))
@@ -364,11 +328,11 @@ class TriplexDataset(Dataset):
     def _infer_feature_dim(self) -> int:
         if self.positional_omics:
             if self.omics_feature_mode == "coverage_score":
-                return self.max_seq_len * self.base_feature_dim * 2 + self.kmer_dim
-            return self.max_seq_len * self.base_feature_dim + self.kmer_dim
+                return self.max_seq_len * self.base_feature_dim * 2
+            return self.max_seq_len * self.base_feature_dim
         if self.omics_feature_mode == "coverage_score":
-            return self.base_feature_dim * 2 + self.kmer_dim
-        return self.base_feature_dim + self.kmer_dim
+            return self.base_feature_dim * 2
+        return self.base_feature_dim
 
     def _transform_score(self, score: float, scale: float) -> float:
         score = max(float(score), 0.0)

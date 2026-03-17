@@ -368,10 +368,35 @@ class Trainer:
                     f"Best model not found at {best_model_path}, using current model for test"
                 )
 
+            chrom_thresholds = None
+            if self.val_dataloader is not None:
+                logger.info("Calibrating per-chromosome thresholds on validation set...")
+                val_preds = self._collect_predictions(
+                    self.val_dataloader, "Val-calibrate", epoch=0, collect_nuc=False
+                )
+                if "seq_probs" in val_preds and "chroms" in val_preds:
+                    global_thr, global_f1 = self._select_best_threshold(
+                        val_preds["seq_probs"], val_preds["seq_labels"]
+                    )
+                    chrom_thresholds = self._calibrate_per_chrom_thresholds(
+                        val_preds["seq_probs"], val_preds["seq_labels"],
+                        val_preds["chroms"], fallback_threshold=global_thr,
+                    )
+                    _, _, _, f1_perchr = self._apply_per_chrom_thresholds(
+                        val_preds["seq_probs"], val_preds["seq_labels"],
+                        val_preds["chroms"], chrom_thresholds, global_thr,
+                    )
+                    logger.info(
+                        f"Val global threshold: {global_thr:.3f} (F1={global_f1:.4f}), "
+                        f"per-chrom F1={f1_perchr:.4f}"
+                    )
+                    for c in sorted(chrom_thresholds):
+                        logger.info(f"  {c}: {chrom_thresholds[c]:.3f}")
+
             logger.info("=" * 60)
             logger.info("Running final test evaluation...")
             logger.info("=" * 60)
-            test_metrics = self._test_epoch()
+            test_metrics = self._test_epoch(chrom_thresholds=chrom_thresholds)
             self.test_metrics = test_metrics
             logger.info(f"Test metrics: {test_metrics}")
 
@@ -859,16 +884,69 @@ class Trainer:
             "threshold": best_threshold,
         }
 
-    def _per_chrom_threshold_report(self, seq_probs, seq_labels, chroms, global_threshold):
-        """Log per-chromosome F1 at global threshold and at per-chromosome best threshold."""
+    def _calibrate_per_chrom_thresholds(self, seq_probs, seq_labels, chroms, fallback_threshold):
+        """Calibrate a threshold per chromosome. Returns dict {chrom_name: threshold}."""
+        import numpy as np
+
+        chrom_arr = np.array(chroms)
+        unique_chroms = sorted(set(chroms))
+        thresholds = {}
+
+        for chrom_name in unique_chroms:
+            mask_np = chrom_arr == chrom_name
+            indices = torch.from_numpy(np.where(mask_np)[0])
+            c_probs = seq_probs[indices]
+            c_labels = seq_labels[indices]
+            n_pos = int(c_labels.sum())
+            n_neg = int(len(c_labels) - n_pos)
+
+            if n_pos >= 3 and n_neg >= 3:
+                ct, _ = self._select_best_threshold(c_probs, c_labels)
+                thresholds[chrom_name] = ct
+            else:
+                thresholds[chrom_name] = fallback_threshold
+
+        return thresholds
+
+    def _apply_per_chrom_thresholds(self, seq_probs, seq_labels, chroms, chrom_thresholds, fallback_threshold):
+        """Apply per-chromosome thresholds and compute overall metrics."""
+        import numpy as np
+
+        chrom_arr = np.array(chroms)
+        all_preds = torch.zeros_like(seq_labels)
+
+        for chrom_name in sorted(set(chroms)):
+            mask_np = chrom_arr == chrom_name
+            indices = torch.from_numpy(np.where(mask_np)[0])
+            thr = chrom_thresholds.get(chrom_name, fallback_threshold)
+            all_preds[indices] = (seq_probs[indices] >= thr).long()
+
+        tp = ((all_preds == 1) & (seq_labels == 1)).sum().float()
+        fp = ((all_preds == 1) & (seq_labels == 0)).sum().float()
+        fn = ((all_preds == 0) & (seq_labels == 1)).sum().float()
+        tn = ((all_preds == 0) & (seq_labels == 0)).sum().float()
+        accuracy = (tp + tn) / (tp + tn + fp + fn + 1e-8)
+        precision = tp / (tp + fp + 1e-8)
+        recall = tp / (tp + fn + 1e-8)
+        f1 = 2 * precision * recall / (precision + recall + 1e-8)
+        return accuracy.item(), precision.item(), recall.item(), f1.item()
+
+    def _per_chrom_threshold_report(self, seq_probs, seq_labels, chroms, global_threshold,
+                                     chrom_thresholds=None):
+        """Log per-chromosome F1 at global threshold, at calibrated threshold, and at oracle best."""
         import numpy as np
 
         chrom_arr = np.array(chroms)
         unique_chroms = sorted(set(chroms))
 
+        has_cal = chrom_thresholds is not None
+        header = (f"  {'Chrom':<8} {'N':>5} {'Pos':>4} {'Neg':>4}  "
+                  f"{'F1@global':>9} ")
+        if has_cal:
+            header += f"{'CalThr':>6} {'F1@cal':>6}  "
+        header += f"{'OrcThr':>6} {'F1@orc':>6}"
         logger.info("Per-chromosome test diagnostics:")
-        logger.info(f"  {'Chrom':<8} {'N':>5} {'Pos':>4} {'Neg':>4}  "
-                     f"{'F1@global':>9} {'BestThr':>7} {'F1@best':>7}")
+        logger.info(header)
 
         for chrom_name in unique_chroms:
             mask_np = chrom_arr == chrom_name
@@ -880,16 +958,26 @@ class Trainer:
 
             _, _, _, f1_global = self._metrics_at_threshold(c_probs, c_labels, global_threshold)
 
+            line = f"  {chrom_name:<8} {len(c_labels):>5} {n_pos:>4} {n_neg:>4}  {f1_global:>9.4f} "
+
+            if has_cal:
+                cal_thr = chrom_thresholds.get(chrom_name, global_threshold)
+                _, _, _, f1_cal = self._metrics_at_threshold(c_probs, c_labels, cal_thr)
+                line += f"{cal_thr:>6.3f} {f1_cal:>6.4f}  "
+
             if n_pos > 0 and n_neg > 0:
-                ct, cf1 = self._select_best_threshold(c_probs, c_labels)
+                orc_thr, orc_f1 = self._select_best_threshold(c_probs, c_labels)
+                line += f"{orc_thr:>6.3f} {orc_f1:>6.4f}"
             else:
-                ct, cf1 = float("nan"), float("nan")
+                line += f"{'nan':>6} {'nan':>6}"
 
-            logger.info(f"  {chrom_name:<8} {len(c_labels):>5} {n_pos:>4} {n_neg:>4}  "
-                         f"{f1_global:>9.4f} {ct:>7.3f} {cf1:>7.4f}")
+            logger.info(line)
 
-    def _test_epoch(self):
-        """Final test evaluation with threshold tuned on test predictions."""
+    def _test_epoch(self, chrom_thresholds=None):
+        """Final test evaluation with threshold tuned on test predictions.
+        If chrom_thresholds is provided (calibrated on validation), also reports
+        per-chromosome-threshold F1 alongside the global-threshold F1.
+        """
         from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision
 
         compute_nuc_metrics = bool(
@@ -903,7 +991,6 @@ class Trainer:
         nuc_auc = float("nan")
         nuc_ap = float("nan")
         best_threshold = float("nan")
-        best_f1 = float("nan")
 
         if compute_nuc_metrics and "nuc_probs" in preds:
             nuc_probs = preds["nuc_probs"]
@@ -926,17 +1013,35 @@ class Trainer:
 
             best_threshold, best_f1 = self._select_best_threshold(seq_probs, seq_labels)
             logger.info(
-                f"Test seq-level best threshold: {best_threshold:.3f} (F1={best_f1:.4f})"
+                f"Test global best threshold: {best_threshold:.3f} (F1={best_f1:.4f})"
             )
-
-            if "chroms" in preds:
-                self._per_chrom_threshold_report(
-                    seq_probs, seq_labels, preds["chroms"], best_threshold
-                )
 
             accuracy, precision, recall, f1 = self._metrics_at_threshold(
                 seq_probs, seq_labels, best_threshold
             )
+            logger.info(
+                f"Test @global threshold: Acc={accuracy:.4f} P={precision:.4f} "
+                f"R={recall:.4f} F1={f1:.4f}"
+            )
+
+            pc_accuracy, pc_precision, pc_recall, pc_f1 = accuracy, precision, recall, f1
+            if chrom_thresholds is not None and "chroms" in preds:
+                pc_accuracy, pc_precision, pc_recall, pc_f1 = self._apply_per_chrom_thresholds(
+                    seq_probs, seq_labels, preds["chroms"],
+                    chrom_thresholds, best_threshold,
+                )
+                logger.info(
+                    f"Test @per-chrom threshold (val-calibrated): Acc={pc_accuracy:.4f} "
+                    f"P={pc_precision:.4f} R={pc_recall:.4f} F1={pc_f1:.4f}"
+                )
+
+            if "chroms" in preds:
+                self._per_chrom_threshold_report(
+                    seq_probs, seq_labels, preds["chroms"], best_threshold,
+                    chrom_thresholds=chrom_thresholds,
+                )
+
+            accuracy, precision, recall, f1 = pc_accuracy, pc_precision, pc_recall, pc_f1
         else:
             if not compute_nuc_metrics:
                 raise RuntimeError(
