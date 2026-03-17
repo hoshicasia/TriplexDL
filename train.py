@@ -65,24 +65,7 @@ def _resolve_dataset_paths(dataset_cfg):
     return dataset_cfg
 
 
-<<<<<<< Updated upstream
 def _balance_split(indices, all_labels, target_ratio, split_name, seed):
-    """
-    Balance a split to achieve target neg:pos ratio using undersampling.
-
-    Args:
-        indices: Indices for this split
-        all_labels: List of all labels
-        target_ratio: Desired neg:pos ratio (e.g., 5.0 for 5:1)
-        split_name: Name for logging
-        seed: Random seed
-
-    Returns:
-        Balanced indices
-    """
-=======
-def _balance_split(indices, all_labels, target_ratio, split_name, seed, all_chromosomes=None):
->>>>>>> Stashed changes
     np.random.seed(seed)
 
     split_labels = [all_labels[i] for i in indices]
