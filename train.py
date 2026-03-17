@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-"""
-Main training script for triplex DNA prediction models.
-"""
 
 import logging
 import warnings
@@ -28,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 def _metrics_at_threshold_np(probs, labels, threshold):
-    """Compute accuracy/precision/recall/F1 for binary probs at a threshold."""
     preds = (probs >= threshold).astype(np.int32)
     labels = labels.astype(np.int32)
 
@@ -51,7 +47,6 @@ def _metrics_at_threshold_np(probs, labels, threshold):
 
 
 def _find_best_threshold_np(probs, labels):
-    """Find threshold in [0.01, 0.99] maximizing F1."""
     thresholds = np.linspace(0.01, 0.99, 199)
     best_t = 0.5
     best_f1 = -1.0
@@ -64,13 +59,13 @@ def _find_best_threshold_np(probs, labels):
 
 
 def _resolve_dataset_paths(dataset_cfg):
-    """Resolve dataset paths to absolute paths for Hydra run directories."""
     for key in ("pos_fasta_path", "neg_fasta_path", "bed_dir"):
         if key in dataset_cfg and dataset_cfg[key] is not None:
             dataset_cfg[key] = to_absolute_path(str(dataset_cfg[key]))
     return dataset_cfg
 
 
+<<<<<<< Updated upstream
 def _balance_split(indices, all_labels, target_ratio, split_name, seed):
     """
     Balance a split to achieve target neg:pos ratio using undersampling.
@@ -85,6 +80,9 @@ def _balance_split(indices, all_labels, target_ratio, split_name, seed):
     Returns:
         Balanced indices
     """
+=======
+def _balance_split(indices, all_labels, target_ratio, split_name, seed, all_chromosomes=None):
+>>>>>>> Stashed changes
     np.random.seed(seed)
 
     split_labels = [all_labels[i] for i in indices]
@@ -135,7 +133,6 @@ def _balance_split(indices, all_labels, target_ratio, split_name, seed):
 
 
 def _quantile_bin(values, n_quantiles: int = 4):
-    """Quantize a numeric vector into quantile bins [0..n_quantiles-1]."""
     values = np.asarray(values, dtype=np.float32)
     if values.size == 0:
         return np.array([], dtype=np.int32)
@@ -152,7 +149,6 @@ def _quantile_bin(values, n_quantiles: int = 4):
 
 
 def _build_safe_strata(strata, class_labels, min_count=3):
-    """Replace rare strata with class-only fallback to make stratify stable."""
     counts = Counter(strata)
     safe = []
     for s, c in zip(strata, class_labels):
@@ -164,11 +160,6 @@ def _build_safe_strata(strata, class_labels, min_count=3):
 
 
 def _genomic_bin_representative_split(full_dataset, labels, config, use_validation):
-    """Representative group split by genomic bins.
-
-    Keeps leakage protection (bin-level grouping) while improving representation
-    across train/val/test by stratifying bins on class + bin-level summary stats.
-    """
     bin_size = config.get("bin_size", 2_000_000)
     test_frac = config.get("test_frac", 0.15)
     val_frac = config.get("val_frac", 0.15)
@@ -239,7 +230,6 @@ def _genomic_bin_representative_split(full_dataset, labels, config, use_validati
     )
 
     def _choose_stratify_labels(indices, detailed_labels, class_labels, stage_name):
-        """Pick safe labels for stratified split, with robust fallbacks."""
         idx_list = list(indices)
         if len(idx_list) < 2:
             logger.warning(
@@ -432,16 +422,9 @@ def _genomic_bin_representative_split(full_dataset, labels, config, use_validati
 
 
 def _build_kfold_index_groups(config, full_dataset, chromosomes, labels, k_fold):
-    """Build k-fold groups as sample-index lists, respecting split_method.
+    split_method = config.get("split_method", "genomic_bin_representative")
 
-    Returns:
-        (groups, grouping_mode)
-        groups: list[list[int]] where each sublist is one fold-group of sample indices.
-        grouping_mode: "chromosome" or "genomic_bin".
-    """
-    split_method = config.get("split_method", "chromosome")
-
-    if split_method in {"genomic_bin", "genomic_bin_representative"}:
+    if split_method == "genomic_bin_representative":
         bin_size = int(config.get("bin_size", 2_000_000))
         logger.info(
             f"Building k-fold groups by genomic bins (split_method={split_method}, "
@@ -467,69 +450,60 @@ def _build_kfold_index_groups(config, full_dataset, chromosomes, labels, k_fold)
         bin_labels = np.array(bin_labels, dtype=np.int32)
 
         strat_labels = None
-        if split_method == "genomic_bin_representative":
-            n_quantiles = int(config.get("rep_split_n_quantiles", 4))
-            min_stratum_count = int(config.get("rep_split_min_stratum_count", 3))
+        n_quantiles = int(config.get("rep_split_n_quantiles", 4))
+        min_stratum_count = int(config.get("rep_split_min_stratum_count", 3))
 
-            bin_pos_rate = []
-            bin_mean_len = []
-            bin_mean_gc = []
-            for b in unique_bins:
-                idxs = bin_to_indices[b]
-                y = np.array([labels[i] for i in idxs], dtype=np.float32)
-                lengths = np.array(
-                    [
-                        int(full_dataset.data[i][2]) - int(full_dataset.data[i][1])
-                        for i in idxs
-                    ],
-                    dtype=np.float32,
-                )
-                gc_vals = []
-                for i in idxs:
-                    seq = str(full_dataset.data[i][4])
-                    seq_len = max(len(seq), 1)
-                    gc_vals.append((seq.count("G") + seq.count("C")) / seq_len)
-                gc_vals = np.array(gc_vals, dtype=np.float32)
+        bin_pos_rate = []
+        bin_mean_len = []
+        bin_mean_gc = []
+        for b in unique_bins:
+            idxs = bin_to_indices[b]
+            y = np.array([labels[i] for i in idxs], dtype=np.float32)
+            lengths = np.array(
+                [
+                    int(full_dataset.data[i][2]) - int(full_dataset.data[i][1])
+                    for i in idxs
+                ],
+                dtype=np.float32,
+            )
+            gc_vals = []
+            for i in idxs:
+                seq = str(full_dataset.data[i][4])
+                seq_len = max(len(seq), 1)
+                gc_vals.append((seq.count("G") + seq.count("C")) / seq_len)
+            gc_vals = np.array(gc_vals, dtype=np.float32)
 
-                bin_pos_rate.append(float(y.mean()))
-                bin_mean_len.append(float(lengths.mean()))
-                bin_mean_gc.append(float(gc_vals.mean()))
+            bin_pos_rate.append(float(y.mean()))
+            bin_mean_len.append(float(lengths.mean()))
+            bin_mean_gc.append(float(gc_vals.mean()))
 
-            pos_q = _quantile_bin(bin_pos_rate, n_quantiles=n_quantiles)
-            len_q = _quantile_bin(bin_mean_len, n_quantiles=n_quantiles)
-            gc_q = _quantile_bin(bin_mean_gc, n_quantiles=n_quantiles)
+        pos_q = _quantile_bin(bin_pos_rate, n_quantiles=n_quantiles)
+        len_q = _quantile_bin(bin_mean_len, n_quantiles=n_quantiles)
+        gc_q = _quantile_bin(bin_mean_gc, n_quantiles=n_quantiles)
 
-            detailed = [
-                f"c{int(c)}_p{int(p)}_l{int(length_bin)}_g{int(g)}"
-                for c, p, length_bin, g in zip(bin_labels, pos_q, len_q, gc_q)
-            ]
-            safe = _build_safe_strata(detailed, bin_labels, min_count=min_stratum_count)
-            safe_counts = Counter(safe)
+        detailed = [
+            f"c{int(c)}_p{int(p)}_l{int(length_bin)}_g{int(g)}"
+            for c, p, length_bin, g in zip(bin_labels, pos_q, len_q, gc_q)
+        ]
+        safe = _build_safe_strata(detailed, bin_labels, min_count=min_stratum_count)
+        safe_counts = Counter(safe)
 
-            if len(safe_counts) >= 2 and min(safe_counts.values()) >= k_fold:
-                strat_labels = np.array(safe)
-                logger.info(
-                    f"Using representative strata for k-fold bin split "
-                    f"(unique={len(safe_counts)})"
-                )
-            else:
-                class_counts = Counter(bin_labels.tolist())
-                if len(class_counts) >= 2 and min(class_counts.values()) >= k_fold:
-                    strat_labels = bin_labels
-                    logger.info(
-                        "Representative strata too sparse; fallback to class-only bin stratification"
-                    )
-                else:
-                    logger.warning(
-                        "No valid stratification labels for bin k-fold; fallback to non-stratified KFold"
-                    )
+        if len(safe_counts) >= 2 and min(safe_counts.values()) >= k_fold:
+            strat_labels = np.array(safe)
+            logger.info(
+                f"Using representative strata for k-fold bin split "
+                f"(unique={len(safe_counts)})"
+            )
         else:
             class_counts = Counter(bin_labels.tolist())
             if len(class_counts) >= 2 and min(class_counts.values()) >= k_fold:
                 strat_labels = bin_labels
+                logger.info(
+                    "Representative strata too sparse; fallback to class-only bin stratification"
+                )
             else:
                 logger.warning(
-                    "Class labels too sparse for stratified bin k-fold; fallback to non-stratified KFold"
+                    "No valid stratification labels for bin k-fold; fallback to non-stratified KFold"
                 )
 
         if strat_labels is not None:
@@ -550,18 +524,23 @@ def _build_kfold_index_groups(config, full_dataset, chromosomes, labels, k_fold)
 
         return groups, "genomic_bin"
 
-    logger.info("Building k-fold groups by chromosome")
-    unique_chroms = sorted(set(chromosomes))
-    chrom_groups = [[] for _ in range(k_fold)]
-    for i, chrom in enumerate(unique_chroms):
-        chrom_groups[i % k_fold].append(chrom)
+    logger.info("Building k-fold groups by random stratified split")
+    indices = np.arange(len(full_dataset))
+    labels_arr = np.array(labels)
+    class_counts = Counter(labels_arr.tolist())
+    if len(class_counts) >= 2 and min(class_counts.values()) >= k_fold:
+        splitter = StratifiedKFold(
+            n_splits=k_fold, shuffle=True, random_state=config.seed
+        )
+        split_iter = splitter.split(indices, labels_arr)
+    else:
+        splitter = KFold(n_splits=k_fold, shuffle=True, random_state=config.seed)
+        split_iter = splitter.split(indices)
 
     groups = []
-    for group_chroms in chrom_groups:
-        idxs = [i for i, c in enumerate(chromosomes) if c in group_chroms]
-        groups.append(idxs)
-
-    return groups, "chromosome"
+    for _, test_idx in split_iter:
+        groups.append(test_idx.tolist())
+    return groups, "random"
 
 
 def _build_fold(
@@ -577,18 +556,12 @@ def _build_fold(
     fold_name="",
     initial_best_threshold=0.5,
 ):
-    """
-    Build dataloaders, model, optimizer, etc. for one fold and train.
-
-    Returns:
-        dict with test metrics for this fold.
-    """
     balance_method = config.get("balance_method", "downsample")
     train_ratio = config.get("target_class_ratio", 5.0)
     eval_ratio = config.get("eval_class_ratio", None)
     use_validation = config.trainer.get("use_validation", True)
 
-    resample_info = None  # will be set if balance_method == "resample"
+    resample_info = None
 
     _train_labels_pre = [labels[i] for i in train_indices]
     _pos_pre = [
@@ -827,16 +800,9 @@ def _build_fold(
 
 
 @hydra.main(
-    version_base=None, config_path="src/configs", config_name="grummit_triplexnet"
+    version_base=None, config_path="src/configs", config_name="baseline"
 )
 def main(config):
-    """
-    Main training function.
-    Supports single-split training and k-fold cross-validation.
-
-    Args:
-        config (DictConfig): hydra experiment config.
-    """
     set_random_seed(config.seed)
 
     if config.trainer.device == "auto":
@@ -940,7 +906,7 @@ def main(config):
         if final_stage_enabled:
             if len(index_groups) < 4:
                 logger.warning(
-                    "k_fold_final_stage requested but needs at least 4 chromosome groups "
+                    "k_fold_final_stage requested but needs at least 4 groups "
                     "(train/val/test in CV + 1 blind group). Disabling final stage."
                 )
                 final_stage_enabled = False
@@ -1197,8 +1163,10 @@ def main(config):
         test_indices = saved_indices["test"]
         logger.info("Using saved data split indices from checkpoint")
     else:
-        split_method = config.get("split_method", "chromosome")
+        split_method = config.get("split_method", "genomic_bin_representative")
         use_validation = config.trainer.get("use_validation", True)
+        test_frac = config.get("test_frac", 0.15)
+        val_frac = config.get("val_frac", 0.15)
 
         if split_method == "genomic_bin_representative":
             (
@@ -1212,141 +1180,9 @@ def main(config):
                 use_validation=use_validation,
             )
 
-        elif split_method == "genomic_bin":
-            bin_size = config.get("bin_size", 2_000_000)  # 2 Mb default
-            test_frac = config.get("test_frac", 0.15)
-            val_frac = config.get("val_frac", 0.15)
-
-            logger.info(
-                f"Using genomic bin split: bin_size={bin_size / 1e6:.0f}Mb, "
-                f"test={test_frac:.0%}, val={val_frac:.0%}"
-            )
-
-            bin_ids = []
-            coords = []
-            for idx in range(len(full_dataset)):
-                item = full_dataset.data[idx]
-                chrom, start, end = item[0], item[1], item[2]
-                mid = (start + end) // 2
-                bin_idx = mid // bin_size
-                bin_ids.append(f"{chrom}_{bin_idx}")
-                coords.append((chrom, start, end))
-
-            from collections import defaultdict
-
-            bin_to_indices = defaultdict(list)
-            bin_to_labels = defaultdict(list)
-            for idx, bid in enumerate(bin_ids):
-                bin_to_indices[bid].append(idx)
-                bin_to_labels[bid].append(labels[idx])
-
-            unique_bins = sorted(bin_to_indices.keys())
-            bin_labels = [
-                1 if any(label == 1 for label in bin_to_labels[b]) else 0
-                for b in unique_bins
-            ]
-
-            logger.info(
-                f"  Total bins: {len(unique_bins)} "
-                f"(pos_bins={sum(bin_labels)}, neg_bins={len(bin_labels) - sum(bin_labels)})"
-            )
-
-            bin_indices = np.arange(len(unique_bins))
-            if use_validation and val_frac > 0:
-                train_bins, temp_bins = train_test_split(
-                    bin_indices,
-                    test_size=test_frac + val_frac,
-                    random_state=config.seed,
-                    stratify=bin_labels,
-                )
-                temp_labels = [bin_labels[i] for i in temp_bins]
-                relative_val = val_frac / (test_frac + val_frac)
-                val_bins, test_bins = train_test_split(
-                    temp_bins,
-                    test_size=1 - relative_val,
-                    random_state=config.seed,
-                    stratify=temp_labels,
-                )
-            else:
-                train_bins, test_bins = train_test_split(
-                    bin_indices,
-                    test_size=test_frac,
-                    random_state=config.seed,
-                    stratify=bin_labels,
-                )
-                val_bins = np.array([], dtype=int)
-
-            train_set = set(train_bins)
-            val_set = set(val_bins)
-            set(test_bins)
-
-            train_indices, val_indices, test_indices = [], [], []
-            for bi, bname in enumerate(unique_bins):
-                idxs = bin_to_indices[bname]
-                if bi in train_set:
-                    train_indices.extend(idxs)
-                elif bi in val_set:
-                    val_indices.extend(idxs)
-                else:
-                    test_indices.extend(idxs)
-
-            train_indices = np.array(train_indices)
-            val_indices = np.array(val_indices)
-            test_indices = np.array(test_indices)
-
-            for split_name, split_bins in [
-                ("Train", train_bins),
-                ("Val", val_bins),
-                ("Test", test_bins),
-            ]:
-                n_pos_bins = sum(1 for i in split_bins if bin_labels[i] == 1)
-                n_neg_bins = len(split_bins) - n_pos_bins
-                logger.info(
-                    f"  {split_name}: {len(split_bins)} bins "
-                    f"(pos={n_pos_bins}, neg={n_neg_bins})"
-                )
-
-            split_pairs = [(test_indices, "Test", train_indices, "Train")]
-            if use_validation and len(val_indices) > 0:
-                split_pairs.insert(0, (val_indices, "Val", train_indices, "Train"))
-            for split_a, name_a, split_b, name_b in split_pairs:
-                min_dist = float("inf")
-                for ia in split_a[:100]:
-                    ca, sa, ea = coords[ia]
-                    for ib in split_b:
-                        cb, sb, eb = coords[ib]
-                        if ca == cb:
-                            d = max(0, max(sa, sb) - min(ea, eb))
-                            min_dist = min(min_dist, d)
-                logger.info(
-                    f"  Min distance {name_a}↔{name_b}: {min_dist / 1000:.0f}kb "
-                    f"(bin_size={bin_size / 1e6:.0f}Mb)"
-                )
-
-        elif split_method == "chromosome" or config.get("chromosome_split", False):
-            logger.info("Using chromosome-based split to avoid data leakage")
-            unique_chroms = sorted(set(chromosomes))
-            logger.info(f"Unique chromosomes: {unique_chroms}")
-
-            test_chroms = config.get("test_chromosomes", ["chr1", "chr2"])
-            val_chroms = config.get("val_chromosomes", ["chr3", "chr4"])
-
-            train_indices, val_indices, test_indices = [], [], []
-            for idx, chrom in enumerate(chromosomes):
-                if chrom in test_chroms:
-                    test_indices.append(idx)
-                elif use_validation and chrom in val_chroms:
-                    val_indices.append(idx)
-                else:
-                    train_indices.append(idx)
-
-            train_indices = np.array(train_indices)
-            val_indices = np.array(val_indices)
-            test_indices = np.array(test_indices)
-            logger.info(f"Chromosome split - Test: {test_chroms}, Val: {val_chroms}")
         else:
-            logger.warning(
-                "Using random stratified split - this may cause data leakage between train/val/test!"
+            logger.info(
+                f"Using random stratified split: test={test_frac:.0%}, val={val_frac:.0%}"
             )
             indices = np.arange(len(full_dataset))
             if use_validation and val_frac > 0:

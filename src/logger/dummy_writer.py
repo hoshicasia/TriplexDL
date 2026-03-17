@@ -1,9 +1,4 @@
 class DummyWriter:
-    """
-    Dummy writer for logging. Does minimal logging to console.
-    Can be replaced with WandB or TensorBoard writer later.
-    """
-
     def __init__(
         self, logger=None, project_config=None, run_name="experiment", **kwargs
     ):

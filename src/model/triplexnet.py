@@ -1,20 +1,9 @@
-"""TriplexNet model for nucleotide-level triplex prediction.
-
-Architecture:
-- multi-scale Conv1d stem,
-- dilated residual tower with SE blocks,
-- FiLM conditioning from omics features,
-- per-position prediction head (+ optional sequence auxiliary head).
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class DropPath(nn.Module):
-    """Stochastic depth for residual branches."""
-
     def __init__(self, drop_prob: float = 0.0):
         super().__init__()
         self.drop_prob = drop_prob
@@ -29,8 +18,6 @@ class DropPath(nn.Module):
 
 
 class SEBlock(nn.Module):
-    """Squeeze-and-Excitation block with mask-aware pooling."""
-
     def __init__(self, channels: int, reduction: int = 4):
         super().__init__()
         mid = max(channels // reduction, 8)
@@ -43,17 +30,15 @@ class SEBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         if mask is not None:
-            m = mask.unsqueeze(1) 
-            s = (x * m).sum(dim=2) / (m.sum(dim=2) + 1e-8)  
+            m = mask.unsqueeze(1)
+            s = (x * m).sum(dim=2) / (m.sum(dim=2) + 1e-8)
         else:
-            s = x.mean(dim=2) 
+            s = x.mean(dim=2)
         e = self.fc(s).view(x.size(0), x.size(1), 1)
         return x * e
 
 
 class DilatedResBlock(nn.Module):
-    """Residual block with dilated Conv1d, GroupNorm and DropPath."""
-
     def __init__(
         self,
         channels: int,
@@ -83,29 +68,16 @@ class DilatedResBlock(nn.Module):
 
 
 class TriplexNet(nn.Module):
-    """
-    Dilated CNN with SE attention and FiLM conditioning for triplex prediction.
-
-    Inputs:
-        sequence       [batch, seq_len, 4]   one-hot encoded DNA
-        omics_features [batch, n_omics]      global chromatin/epigenomic features
-
-    Output:
-        {"logits": Tensor}
-            nucleotide_level=True  → [batch, seq_len]
-            nucleotide_level=False → [batch]
-    """
-
     def __init__(
         self,
         n_omics_features: int = 221,
         dropout: float = 0.2,
         n_channels: int = 128,
-        n_dilated_blocks: int = 7,  # 7 blocks → RF ≈ 270bp
+        n_dilated_blocks: int = 7,
         kernel_size: int = 3,
         se_reduction: int = 4,
-        drop_path_rate: float = 0.15,  # stochastic depth (linearly increases)
-        aux_loss_weight: float = 0.15,  # weight for auxiliary sequence-level loss
+        drop_path_rate: float = 0.15,
+        aux_loss_weight: float = 0.15,
         nucleotide_level: bool = True,
     ):
         super().__init__()
@@ -217,7 +189,6 @@ class TriplexNet(nn.Module):
 
     @staticmethod
     def _init_weights(m):
-        """Kaiming initialization for conv/linear layers (linear mode for GELU)."""
         if isinstance(m, (nn.Conv1d, nn.Linear)):
             nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="linear")
             if m.bias is not None:
@@ -227,33 +198,17 @@ class TriplexNet(nn.Module):
             nn.init.zeros_(m.bias)
 
     def _masked_mean_pool(self, x, mask):
-        """Average-pool only over real (non-padding) positions.
-
-        Args:
-            x:    [B, C, L]
-            mask: [B, L] with 1=real, 0=padding, or None
-        Returns:
-            [B, C]
-        """
         if mask is None:
             return x.mean(dim=2)
-        m = mask.unsqueeze(1)  # [B, 1, L]
-        return (x * m).sum(dim=2) / (m.sum(dim=2) + 1e-8)  # [B, C]
+        m = mask.unsqueeze(1)
+        return (x * m).sum(dim=2) / (m.sum(dim=2) + 1e-8)
 
     def _attn_pool(self, x, mask):
-        """Gated attention pooling (Ilse et al., 2018 style).
-
-        Args:
-            x:    [B, C, L]
-            mask: [B, L] with 1=real, 0=padding, or None
-        Returns:
-            [B, C]
-        """
-        attn_logits = self.attn_pool_layer(x).squeeze(1)  # [B, L]
+        attn_logits = self.attn_pool_layer(x).squeeze(1)
         if mask is not None:
             attn_logits = attn_logits.masked_fill(~mask.bool(), float("-inf"))
-        attn_weights = torch.softmax(attn_logits, dim=1)  # [B, L]
-        return (x * attn_weights.unsqueeze(1)).sum(dim=2)  # [B, C]
+        attn_weights = torch.softmax(attn_logits, dim=1)
+        return (x * attn_weights.unsqueeze(1)).sum(dim=2)
 
     def forward(self, sequence, omics_features, label=None, tissue_ids=None, mask=None):
         x = sequence.transpose(1, 2)

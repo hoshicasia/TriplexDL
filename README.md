@@ -1,132 +1,105 @@
 # TPX
 
-## Установка и настройка проекта
+## Setup
 
-## Установка
+## Installation
 
 ```bash
 git clone https://github.com/hoshicasia/TriplexNet.git
-cd TPX
+cd TriplexDL
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   
 python -m pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
 
-## Основные файлы
+## Project structure
 
-- Обучение: `train.py`
-- Конфиги: `src/configs/`
-- Датасет (пример): `grummit/triplexDNA_pos.fa`, `grummit/triplexDNA_neg.fa`, `Neural/`
-- Сохранения: `saved/`
+- **Training**: `train.py`
+- **Config**: `src/configs/baseline.yaml`
+- **Data**: `grummit/triplexDNA_pos.fa`, `grummit/triplexDNA_neg.fa`, `Neural/` (BED files)
+- **Checkpoints**: `saved/`
 
-## Быстрый старт
+## Quick start
 
-### Один запуск обучения
+### Single run
 
 ```bash
-python train.py -cn=grummit_triplexnet_improved
+python train.py
 ```
 
-### K-fold кросс-валидация
+### Override parameters
 
 ```bash
-python train.py -cn=grummit_triplexnet_improved k_fold=3
-```
-
-### Запуск на своих данных
-
-```bash
-python train.py -cn=grummit_triplexnet_improved \
-  datasets.train.pos_fasta_path=grummit/triplexDNA_pos.fa \
+python train.py k_fold=3
+python train.py datasets.train.pos_fasta_path=grummit/triplexDNA_pos.fa \
   datasets.train.neg_fasta_path=grummit/triplexDNA_neg.fa \
   datasets.train.bed_dir=Neural
 ```
 
-## Инференс: скоринг своих регионов (тестировалось только на маленьких синтетических данных, могут быть баги)
 
-Скрипт для применения обученной модели: [scripts/score_regions.py](scripts/score_regions.py)
+## Inference
 
-Требования к входу:
-- FASTA с хедерами вида `>id:any:chr1:12345:12445:+` (координаты обязаны быть внутри хедера)
-- Набор омиксов в формате .BED
-- Чекпоинт вида `model_best.pth`
+Script: [scripts/score_regions.py](scripts/score_regions.py)
 
-Пример запуска:
+Requirements:
+- FASTA with headers like `>id:any:chr1:12345:12445:+` (coordinates in header)
+- BED files for omics features
+- Checkpoint `model_best.pth`
+
 ```bash
 python scripts/score_regions.py \
-  --fasta /abs/path/your_candidates.fa \
-  --bed-dir /abs/path/Neural \
+  --fasta /path/to/candidates.fa \
+  --bed-dir /path/to/Neural \
   --checkpoint saved/<run>/model_best.pth \
   --out saved/<run>/inference/preds.tsv \
   --nuc-out saved/<run>/inference/preds.nuc.bedgraph \
   --batch-size 8
 ```
 
-По умолчанию используется `best_threshold` из чекпоинта, но можно задать его как `--threshold` явно. Если нужно только sequence-level предсказание, опцию `--nuc-out` можно не указывать.
+Use `--threshold` to override the checkpoint threshold. Omit `--nuc-out` for sequence-level only.
 
-## Важные параметры
+## Key parameters
 
-### Разбиение
+### Splitting
 
-- `split_method`: `genomic_bin`, `genomic_bin_representative`, `chromosome`
-- `bin_size`: размер геномного бина
-- `k_fold`: число фолдов (`0` отключает CV)
-- `target_class_ratio`: баланс neg:pos в train
+- `split_method`: `random`, `genomic_bin_representative`
+- `bin_size`: genomic bin size (bp)
+- `k_fold`: number of folds (0 = single split)
+- `target_class_ratio`: neg:pos ratio in train
 
-### Датасет и аугментации
+### Dataset and augmentation
 
-- `datasets.train.max_seq_len`: максимальная длина последовательности
-- `datasets.train.rc_augment`: reverse-complement аугментация
-- `datasets.train.nuc_mask_prob`: вероятность маскирования one-hot позиций
-- `datasets.train.coord_shift_max`: случайный сдвиг координат для извлечения омиксов
+- `datasets.train.max_seq_len`: max sequence length
+- `datasets.train.rc_augment`: reverse-complement augmentation
+- `datasets.train.nuc_mask_prob`: nucleotide masking probability
+- `datasets.train.coord_shift_max`: random coordinate shift for omics
 - `datasets.train.omics_feature_mode`: `coverage`, `score_mean`, `coverage_score`
-- `datasets.train.score_transform`: `none` или `log1p`
 
-### Модель и оптимизация
+### Model and optimization
 
-- `model.n_channels`, `model.n_dilated_blocks`, `model.kernel_size`
-- `model.drop_path_rate`, `model.dropout`, `model.aux_loss_weight`
-- `loss_function.nuc_loss_weight`, `loss_function.label_smoothing`, `loss_function.attention_entropy_weight`
+- `model.n_channels`, `model.n_dilated_blocks`, `model.dropout`, `model.aux_loss_weight`
+- `loss_function.top_k_ratio`, `loss_function.pos_weight`, `loss_function.label_smoothing`
 - `optimizer.lr`, `optimizer.weight_decay`
-- `lr_scheduler.T_max`, `lr_scheduler.eta_min`
-- `warmup.enabled`, `warmup.warmup_epochs`, `warmup.warmup_start_factor`
+- `lr_scheduler.T_max`, `warmup.enabled`, `warmup.warmup_epochs`
 
-### Баланс классов и hard negatives
+### Hard negative mining
 
-- `target_class_ratio`: отношение neg:pos при обучении
-- `hard_neg_mining_freq`: частота hard-negative mining в эпохах (`0` отключает)
-- `hard_neg_ratio`: доля «сложных» негативов
+- `hard_neg_mining_freq`: epoch interval for mining (0 = disabled)
+- `hard_neg_ratio`: fraction of hard negatives to sample
 
-### Логирование и чекпоинты
-**Важно**:
-В этом проекте используется CometML для трекинга экспериментов.
-Для того, чтобы запустить трекинг, необходимо создать аккаунт comet.com
-и перед запуском указать свой API:
-export COMET_API_KEY=ВАШ_API
+### Logging
 
-- `writer.run_name`, `writer.experiment_name`, `writer._target_`
+In this project, CometML is used for experiment tracking.To use it, you need to set your API key before running:
+
+```bash
+export COMET_API_KEY=YOUR_API_KEY
+```
+
+- `writer.run_name`, `writer.experiment_name`
 - `trainer.save_dir`, `trainer.save_period`, `trainer.early_stop`
 
-## Результаты обучения
+## Outputs
 
-- Лучший чекпоинт: `saved/<run_name>/model_best.pth`
-- Периодические чекпоинты: `saved/<run_name>/checkpoint-epochN.pth`
-
-## Инференс регионов (тестовая версия)
-
-Скрипт: [scripts/score_regions.py](scripts/score_regions.py)
-
-Пример:
-
-```bash
-python scripts/score_regions.py \
-  --fasta /abs/path/candidates.fa \
-  --bed-dir /abs/path/bed_dir \
-  --checkpoint saved/<run>/model_best.pth \
-  --out saved/<run>/inference/preds.tsv \
-  --nuc-out saved/<run>/inference/preds.nuc.bedgraph \
-  --batch-size 8
-```
-
-По умолчанию берется `best_threshold` из чекпоинта, либо можно передать `--threshold`.
+- Best checkpoint: `saved/<run_name>/model_best.pth`
+- Periodic checkpoints: `saved/<run_name>/checkpoint-epochN.pth`

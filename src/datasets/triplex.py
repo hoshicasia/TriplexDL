@@ -16,7 +16,6 @@ class TriplexDataset(Dataset):
 
     @staticmethod
     def _normalize_chrom(chrom: str) -> str:
-        """Normalize chromosome names to a single style (chr-prefixed)."""
         c = str(chrom).strip()
         if not c:
             return c
@@ -41,29 +40,6 @@ class TriplexDataset(Dataset):
         omics_feature_mode: str = "coverage",
         score_transform: str = "log1p",
     ):
-        """
-        Args:
-            pos_fasta_path (str): path to positive samples FASTA file.
-            neg_fasta_path (str): path to negative samples FASTA file.
-            bed_dir (str): directory with BED files for omics features.
-            max_seq_len (int): maximum sequence length.
-            limit (int | None): limit number of samples (for debugging).
-            name (str): dataset partition name.
-            positional_omics (bool): if True, use position-specific omics features.
-            nucleotide_level (bool): if True, return nucleotide-level labels [seq_len].
-            rc_augment (bool): if True, randomly return reverse complement of sequence
-                               (50% chance per sample). Only apply during training.
-            coord_shift_max (int): max random shift (±bp) applied to BED lookup coords
-                                   for omics augmentation. 0 disables.
-            nuc_mask_prob (float): per-position probability of zeroing the one-hot
-                                   encoding (nucleotide masking augmentation). 0 disables.
-            selected_bed_features (list[str] | None): optional BED stem whitelist.
-            omics_feature_mode (str): one of {"coverage", "score_mean", "coverage_score"}.
-                - coverage: overlap fraction per track
-                - score_mean: overlap-weighted normalized BED score per track
-                - coverage_score: concatenate coverage + score_mean per track
-            score_transform (str): one of {"none", "log1p"} for BED score normalization.
-        """
         self.name = name
         self.max_seq_len = max_seq_len
         self.positional_omics = positional_omics
@@ -169,7 +145,10 @@ class TriplexDataset(Dataset):
             "sequence": torch.FloatTensor(sequence),
             "omics_features": torch.FloatTensor(omics_features),
             "label": labels,
+<<<<<<< Updated upstream
             "chrom": chrom,
+=======
+>>>>>>> Stashed changes
         }
 
         if mask is not None:
@@ -181,7 +160,6 @@ class TriplexDataset(Dataset):
     def _parse_fasta_with_coords(
         fasta_file: Path,
     ) -> List[Tuple[str, int, int, str, str]]:
-        """Parse FASTA file and extract coordinates from header"""
         sequences = []
         with open(fasta_file, "r") as f:
             header = None
@@ -213,7 +191,6 @@ class TriplexDataset(Dataset):
     _NUC_TO_IDX = np.frompyfunc(lambda c: {"A": 0, "C": 1, "G": 2, "T": 3}.get(c, -1), 1, 1)
 
     def _one_hot_encode(self, sequence: str) -> np.ndarray:
-        """Vectorized one-hot encoding.  A/C/G/T -> one-hot, N -> 0.25."""
         seq = sequence[: self.max_seq_len]
         arr = np.array(list(seq), dtype="U1")
         idx = np.array([{"A": 0, "C": 1, "G": 2, "T": 3}.get(c, -1) for c in arr], dtype=np.int8)
@@ -281,7 +258,6 @@ class TriplexDataset(Dataset):
         return bed_data, [bf.stem for bf in bed_files], bed_score_scales
 
     def _verify_omics_overlap(self):
-        """Sanity-check that omics features are not globally zero due to coordinate mismatch."""
         n_check = min(100, len(self.data))
         if n_check == 0:
             return
@@ -343,13 +319,6 @@ class TriplexDataset(Dataset):
             return self._extract_global_omics(chrom, start, end)
 
     def _extract_global_omics(self, chrom: str, start: int, end: int) -> np.ndarray:
-        """Extract global omics features from BED overlaps.
-
-        Modes:
-            coverage       -> overlap fraction per BED file
-            score_mean     -> overlap-weighted normalized BED score per BED file
-            coverage_score -> concatenate both for each BED file
-        """
         coverage_features = []
         score_features = []
         region_len = end - start
@@ -394,7 +363,6 @@ class TriplexDataset(Dataset):
         return np.array(coverage_features + score_features, dtype=np.float32)
 
     def _extract_positional_omics(self, chrom: str, start: int, end: int) -> np.ndarray:
-        """Extract position-specific BED features [max_seq_len, n_features]."""
         region_len = min(end - start, self.max_seq_len)
         cov_features = np.zeros(
             (self.max_seq_len, len(self.bed_names)), dtype=np.float32

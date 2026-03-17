@@ -11,10 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 class Trainer:
-    """
-    Trainer class for model training and evaluation.
-    """
-
     def __init__(
         self,
         model,
@@ -49,9 +45,7 @@ class Trainer:
         self.resample_info = resample_info
 
         self.hard_neg_info = hard_neg_info
-        self.hard_neg_mining_freq = config.get(
-            "hard_neg_mining_freq", 0
-        )  # 0 = disabled
+        self.hard_neg_mining_freq = config.get("hard_neg_mining_freq", 0)
         self.hard_neg_ratio = config.get("hard_neg_ratio", 0.5)
 
         self.epochs = config.trainer.n_epochs
@@ -115,7 +109,6 @@ class Trainer:
     def _aggregate_sequence_probs(
         self, nuc_probs: torch.Tensor, mask: torch.Tensor = None
     ) -> torch.Tensor:
-        """Aggregate per-nucleotide probabilities to one sequence score."""
         if hasattr(self.criterion, "aggregate_sequence_probs"):
             seq_prob = self.criterion.aggregate_sequence_probs(nuc_probs, mask=mask)
             if isinstance(seq_prob, tuple):
@@ -146,12 +139,6 @@ class Trainer:
         return topk_probs.mean(dim=1)
 
     def _select_best_threshold(self, probs: torch.Tensor, labels: torch.Tensor):
-        """Select threshold maximizing F1; fallback to PR-intersection if needed.
-
-        NOTE:
-        Pure PR-intersection can pick degenerate thresholds where precision=recall=0
-        (no predicted positives), which yields F1=0 while AUC is high.
-        """
         thresholds = torch.linspace(0.01, 0.99, 199)
         best_threshold = 0.5
         best_f1 = -1.0
@@ -182,40 +169,10 @@ class Trainer:
 
         return best_threshold, best_f1
 
-    def _posthoc_calibrate_threshold(self):
-        """Recalibrate threshold once after training on validation predictions.
-
-        This mirrors paper-like post-training threshold calibration.
-        """
-        if self.val_dataloader is None:
-            logger.info(
-                "Post-hoc threshold calibration skipped: no validation dataloader"
-            )
-            return
-
-        preds = self._collect_predictions(self.val_dataloader, "ValPosthoc", epoch=0)
-        if "seq_probs" in preds and "seq_labels" in preds:
-            probs = preds["seq_probs"]
-            labels = preds["seq_labels"]
-            level = "sequence"
-        else:
-            probs = preds["nuc_probs"]
-            labels = preds["nuc_labels"]
-            level = "nucleotide"
-
-        old_threshold = float(self.best_threshold)
-        new_threshold, new_f1 = self._select_best_threshold(probs, labels)
-        self.best_threshold = float(new_threshold)
-        logger.info(
-            f"Post-hoc threshold calibration ({level}-level, objective=pr_intersection): "
-            f"{old_threshold:.3f} -> {self.best_threshold:.3f} (val F1={new_f1:.4f})"
-        )
-
     def train(self):
-        """Main training loop"""
         for epoch in range(self.start_epoch, self.epochs + 1):
             if self.warmup_enabled and epoch <= self.warmup_epochs:
-                progress = epoch / self.warmup_epochs  # 0 → 1
+                progress = epoch / self.warmup_epochs
                 warmup_lr = self.base_lr * (
                     self.warmup_start_factor
                     + (1.0 - self.warmup_start_factor) * progress
@@ -270,7 +227,7 @@ class Trainer:
                     self.best_val_metric = val_metrics["f1"]
                     self.best_threshold = val_metrics[
                         "threshold"
-                    ]  # lock in threshold for this best F1
+                    ]
                     self.epochs_without_improvement = 0
                     self._save_checkpoint(epoch, is_best=True)
                     logger.info(
@@ -309,7 +266,7 @@ class Trainer:
                     self.lr_scheduler.step()
             else:
                 if self.per_batch_scheduler:
-                    pass  # Already stepped per-batch
+                    pass
                 elif not isinstance(
                     self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
                 ):
@@ -382,7 +339,6 @@ class Trainer:
                     )
 
     def _set_augmentation(self, enabled: bool):
-        """Toggle data augmentation on the underlying dataset."""
         for dl in [self.train_dataloader, self.val_dataloader, self.test_dataloader]:
             if dl is None:
                 continue
@@ -393,7 +349,6 @@ class Trainer:
                 ds.rc_augment = enabled
 
     def _resample_train_dataloader(self, epoch):
-        """Rebuild train dataloader with freshly sampled negatives (1:1 ratio)."""
         info = self.resample_info
         rng = np.random.RandomState(info["seed"] + epoch)
 
@@ -427,18 +382,6 @@ class Trainer:
         )
 
     def _mine_hard_negatives(self, epoch):
-        """Re-select training negatives using hard-negative mining.
-
-        Every ``hard_neg_mining_freq`` epochs:
-          1. Run inference on *all* negatives in the pool with the current model.
-          2. Rank by top-k-mean probability (same scoring as seq-level eval).
-          3. Take the top ``hard_neg_ratio`` fraction as **hard** negatives.
-          4. Fill the remaining quota with *random* negatives (diversity floor).
-          5. Rebuild the train dataloader with: all pos + hard neg + random neg.
-
-        The total number of negatives is kept at ``target_ratio * n_pos`` to
-        preserve the same class balance as the regular downsample run.
-        """
         from hydra.utils import instantiate as hydra_instantiate
 
         from src.utils.init_utils import set_worker_seed
@@ -461,7 +404,7 @@ class Trainer:
             batch_size=mine_bs,
             shuffle=False,
             collate_fn=collate_fn,
-            num_workers=0,  # single-pass; avoid fork overhead
+            num_workers=0,
         )
 
         self.model.eval()
@@ -475,7 +418,7 @@ class Trainer:
                     for k, v in batch.items()
                 }
                 outputs = self.model(**batch)
-                logits = outputs["logits"]  # [B, L]
+                logits = outputs["logits"]
                 nuc_probs = torch.sigmoid(logits)
                 mask = batch.get("mask")
 
@@ -494,7 +437,7 @@ class Trainer:
         n_hard = min(int(n_neg_target * self.hard_neg_ratio), len(all_neg_indices))
         n_random = n_neg_target - n_hard
 
-        sorted_by_score = np.argsort(all_scores)[::-1]  # descending
+        sorted_by_score = np.argsort(all_scores)[::-1]
         hard_local = sorted_by_score[:n_hard].tolist()
         remaining_pool = sorted_by_score[n_hard:]
 
@@ -540,7 +483,6 @@ class Trainer:
             )
 
     def _train_epoch(self, epoch):
-        """Train for one epoch"""
         if self.resample_info is not None:
             self._resample_train_dataloader(epoch)
 
@@ -611,7 +553,6 @@ class Trainer:
         return metrics_result
 
     def _evaluate_on_dataloader(self, dataloader, desc, epoch):
-        """Evaluate model on a dataloader in eval mode"""
         self.model.eval()
         total_loss = 0
 
@@ -653,7 +594,6 @@ class Trainer:
         return metrics_result
 
     def _val_epoch(self, epoch):
-        """Validation for one epoch."""
         if self.threshold_tuning_during_training:
             return self._val_epoch_with_threshold_tuning(epoch)
 
@@ -662,20 +602,6 @@ class Trainer:
         return metrics
 
     def _collect_predictions(self, dataloader, desc, epoch, collect_nuc=True):
-        """
-        Collect predictions from a dataloader.
-
-        Args:
-            collect_nuc: if False, skip collecting per-nucleotide probs/labels
-                         to save memory when only sequence-level metrics are needed.
-
-        Returns dict with:
-            seq_probs   (Tensor [N_seq]): aggregated per-sequence probabilities
-            seq_labels  (Tensor [N_seq]): 0 or 1 per sequence
-            nuc_probs   (Tensor [N_nuc]): sigmoid(logits) per nucleotide (if collect_nuc)
-            nuc_labels  (Tensor [N_nuc]): per-nucleotide labels (if collect_nuc)
-            avg_loss    (float)
-        """
         self.model.eval()
         self._set_augmentation(False)
         all_seq_probs = []
@@ -751,7 +677,6 @@ class Trainer:
         return result
 
     def _metrics_at_threshold(self, all_probs, all_labels, threshold):
-        """Compute precision/recall/F1/accuracy at a given threshold."""
         preds = (all_probs >= threshold).long()
         tp = ((preds == 1) & (all_labels == 1)).sum().float()
         fp = ((preds == 1) & (all_labels == 0)).sum().float()
@@ -764,7 +689,6 @@ class Trainer:
         return accuracy.item(), precision.item(), recall.item(), f1.item()
 
     def _val_epoch_with_threshold_tuning(self, epoch):
-        """Validation with threshold tuning."""
         from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision
 
         compute_nuc_metrics = bool(
@@ -854,7 +778,10 @@ class Trainer:
         }
 
     def _test_epoch(self):
+<<<<<<< Updated upstream
         """Final test evaluation with threshold tuned on test predictions."""
+=======
+>>>>>>> Stashed changes
         from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision
 
         compute_nuc_metrics = bool(

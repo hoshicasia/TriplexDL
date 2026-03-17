@@ -12,11 +12,6 @@ from torchmetrics.classification import (
 
 
 class BaseMetric(Metric):
-    """
-    Base class for metrics.
-    Supports both region-level and nucleotide-level predictions.
-    """
-
     def __init__(
         self,
         name: str = None,
@@ -73,13 +68,11 @@ class BaseMetric(Metric):
         return self.compute().item()
 
     def reset(self):
-        """Reset both outer and inner metric states to prevent memory accumulation."""
         super().reset()
         if self.metric is not None:
             self.metric.reset()
 
     def to(self, device):
-        """Move both outer and inner metric to device."""
         super().to(device)
         if self.metric is not None:
             self.metric.to(device)

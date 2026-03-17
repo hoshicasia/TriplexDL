@@ -4,10 +4,6 @@ from torch import nn
 
 
 class TriplexMILLoss(nn.Module):
-    """
-    MIL loss for triplex prediction with configurable sequence aggregation.
-    """
-
     def __init__(
         self,
         top_k_ratio: float = 0.2,
@@ -206,12 +202,6 @@ class TriplexMILLoss(nn.Module):
         mask: torch.Tensor = None,
         **batch,
     ):
-        """
-        Args:
-            logits: [B, L] per-nucleotide logits
-            label:  [B, L] per-nucleotide labels (uniform: all 1 or all 0)
-            mask:   [B, L] valid position mask (1=valid, 0=padding)
-        """
         seq_label_hard = self._to_sequence_labels(label, mask=mask)
         seq_label = seq_label_hard
 
