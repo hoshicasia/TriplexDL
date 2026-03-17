@@ -144,11 +144,7 @@ class TriplexDataset(Dataset):
         result = {
             "sequence": torch.FloatTensor(sequence),
             "omics_features": torch.FloatTensor(omics_features),
-            "label": labels,
-<<<<<<< Updated upstream
-            "chrom": chrom,
-=======
->>>>>>> Stashed changes
+            "label": labels
         }
 
         if mask is not None:
